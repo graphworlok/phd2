@@ -1150,10 +1150,37 @@ if(UNIX AND NOT APPLE)
         list(APPEND PHD_LINK_EXTERNAL ${qhylib})
       endif()
 
+      set(_playerone_dir ${PHD_PROJECT_ROOT_DIR}/cameras/playerone/linux/${playerone_arch})
+
+      # First try the plain .so name.  On some systems the plain .so is a text
+      # stub (e.g. when symlinks were not preserved by git on Windows), so also
+      # search for versioned names as a fallback so we always link the real ELF.
       find_library( playerone
                     NAMES PlayerOneCamera
+                          PlayerOneCamera.3
+                          PlayerOneCamera.3.10
+                          PlayerOneCamera.3.10.0
                     NO_DEFAULT_PATHS
-                    PATHS ${PHD_PROJECT_ROOT_DIR}/cameras/playerone/linux/${playerone_arch})
+                    PATHS ${_playerone_dir})
+
+      # If find_library returned a text stub (symlink broken in git), resolve
+      # to the actual versioned binary in the same directory.
+      if(playerone)
+        file(READ "${playerone}" _playerone_content LIMIT 64)
+        string(STRIP "${_playerone_content}" _playerone_content)
+        if(NOT "${_playerone_content}" MATCHES "^ELF" AND
+           NOT "${_playerone_content}" MATCHES "^.ELF" AND
+           "${_playerone_content}" MATCHES "^libPlayerOneCamera")
+          # Content is a plain filename stub – resolve it
+          set(_playerone_real "${_playerone_dir}/${_playerone_content}")
+          if(EXISTS "${_playerone_real}")
+            message(STATUS "PlayerOneCamera: resolved stub ${playerone} -> ${_playerone_real}")
+            set(playerone "${_playerone_real}")
+          else()
+            message(FATAL_ERROR "PlayerOneCamera stub points to ${_playerone_real} which does not exist")
+          endif()
+        endif()
+      endif()
 
       if(NOT playerone)
         message(FATAL_ERROR "Cannot find the PlayerOneCamera SDK lib")
@@ -1162,8 +1189,8 @@ if(UNIX AND NOT APPLE)
       include_directories(${PHD_PROJECT_ROOT_DIR}/cameras/playerone/include)
       add_definitions(-DHAVE_PLAYERONE_CAMERA=1)
       list(APPEND PHD_LINK_EXTERNAL ${playerone})
-      # install the .so and symlinks
-      file(GLOB playerone_so_files "${playerone}*")
+      # install the versioned .so and any associated symlinks
+      file(GLOB playerone_so_files "${_playerone_dir}/libPlayerOneCamera.so*")
       list(APPEND PHD_INSTALL_LIBS ${playerone_so_files})
 
     endif(NOT ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")

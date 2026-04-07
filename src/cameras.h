@@ -161,6 +161,7 @@
 
 #  define SIMULATOR
 #  define OPENCV_CAMERA
+#  define V4L2_CAMERA
 #  define CAM_QHY5
 #  ifdef HAVE_OGMA_CAMERA
 #   define OGMA_CAMERA

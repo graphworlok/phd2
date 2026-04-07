@@ -79,6 +79,7 @@ enum OVERLAY_MODE
     OVERLAY_GRID_COARSE,
     OVERLAY_RADEC,
     OVERLAY_SLIT,
+    OVERLAY_ASTROMETRY, // plate-solve + catalog star overlay
 };
 
 struct OverlaySlitCoords
@@ -105,6 +106,7 @@ struct LockPosShiftParams
 };
 
 class DefectMap;
+struct PlateSolveResult;
 
 /*
  * The Guider class is responsible for running the state machine
@@ -164,6 +166,11 @@ class Guider : public wxWindow
     LockPosShiftParams m_lockPosShift;
     bool m_measurementMode;
     double m_minStarHFD;
+
+    // Plate-solve overlay state
+    PlateSolveResult *m_plateSolveResult; // nullptr until a solve completes
+    PHD_Point         m_solveRefStarPos;  // star pixel position at solve time
+    bool              m_plateSolving;     // background solve in progress
     double m_minAFStarSNR;
     double m_maxStarHFD;
     bool m_userMultiStarMode;
@@ -239,6 +246,11 @@ public:
     bool SetOverlayMode(int newMode);
     void GetOverlaySlitCoords(wxPoint *center, wxSize *size, int *angle);
     void SetOverlaySlitCoords(const wxPoint& center, const wxSize& size, int angle);
+
+    // Plate-solve overlay
+    void StartPlateSolve();
+    void ClearPlateSolve();
+    void OnPlateSolveComplete(PlateSolveResult *result);
     void SetDefectMapPreview(const DefectMap *preview);
     void SetPolarAlignCircle(const PHD_Point& center, double radius);
     void SetPolarAlignCircleCorrection(double val);

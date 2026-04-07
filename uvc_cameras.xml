@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  uvc_cameras.xml  –  PHD2 UVC / V4L2 camera database
+  =====================================================
+  Maps USB Vendor ID + Product ID to sensor name and pixel size.
+
+  Fields:
+    usb_vendor_id  : USB vendor ID  (hex with 0x prefix, or decimal)
+    usb_product_id : USB product ID (hex with 0x prefix, or decimal)
+    name           : Human-readable camera name (shown in PHD2 UI)
+    sensor         : Image sensor part number / name
+    pixel_size_um  : Physical pixel pitch in micrometers (µm).
+                     Set to 0 or omit if unknown.
+
+  To contribute an entry, open a pull request against the PHD2 repository.
+  Sources: manufacturer data sheets, CMOS sensor data sheets, EOSHD/CloudyNights
+  measurement threads.
+-->
+<uvc_cameras>
+
+  <!-- ===== Astronomy guide cameras ===== -->
+
+  <!-- ZWO ASI120MM Mini (UVC mode) -->
+  <camera>
+    <usb_vendor_id>0x03c3</usb_vendor_id>
+    <usb_product_id>0x120a</usb_product_id>
+    <name>ZWO ASI120MM Mini</name>
+    <sensor>Aptina AR0130CS</sensor>
+    <pixel_size_um>3.75</pixel_size_um>
+  </camera>
+
+  <!-- ZWO ASI120MC (UVC mode) -->
+  <camera>
+    <usb_vendor_id>0x03c3</usb_vendor_id>
+    <usb_product_id>0x120b</usb_product_id>
+    <name>ZWO ASI120MC</name>
+    <sensor>Aptina AR0130CS</sensor>
+    <pixel_size_um>3.75</pixel_size_um>
+  </camera>
+
+  <!-- Orion StarShoot AutoGuider (SSAG) -->
+  <camera>
+    <usb_vendor_id>0x1856</usb_vendor_id>
+    <usb_product_id>0x0012</usb_product_id>
+    <name>Orion StarShoot AutoGuider</name>
+    <sensor>OmniVision OV7725</sensor>
+    <pixel_size_um>6.0</pixel_size_um>
+  </camera>
+
+  <!-- Celestron NexImage 5 -->
+  <camera>
+    <usb_vendor_id>0x1e54</usb_vendor_id>
+    <usb_product_id>0x0001</usb_product_id>
+    <name>Celestron NexImage 5</name>
+    <sensor>OmniVision OV5647</sensor>
+    <pixel_size_um>1.4</pixel_size_um>
+  </camera>
+
+  <!-- ===== Consumer webcams commonly used for guiding ===== -->
+
+  <!-- Logitech C270 -->
+  <camera>
+    <usb_vendor_id>0x046d</usb_vendor_id>
+    <usb_product_id>0x0825</usb_product_id>
+    <name>Logitech C270</name>
+    <sensor>OmniVision OV9715</sensor>
+    <pixel_size_um>2.8</pixel_size_um>
+  </camera>
+
+  <!-- Logitech C310 -->
+  <camera>
+    <usb_vendor_id>0x046d</usb_vendor_id>
+    <usb_product_id>0x081b</usb_product_id>
+    <name>Logitech C310</name>
+    <sensor>OmniVision OV9715</sensor>
+    <pixel_size_um>2.8</pixel_size_um>
+  </camera>
+
+  <!-- Logitech C920 -->
+  <camera>
+    <usb_vendor_id>0x046d</usb_vendor_id>
+    <usb_product_id>0x082d</usb_product_id>
+    <name>Logitech C920</name>
+    <sensor>Aptina MT9M114</sensor>
+    <pixel_size_um>2.2</pixel_size_um>
+  </camera>
+
+  <!-- Logitech C930e -->
+  <camera>
+    <usb_vendor_id>0x046d</usb_vendor_id>
+    <usb_product_id>0x0843</usb_product_id>
+    <name>Logitech C930e</name>
+    <sensor>Aptina MT9M114</sensor>
+    <pixel_size_um>2.2</pixel_size_um>
+  </camera>
+
+  <!-- Microsoft LifeCam HD-3000 -->
+  <camera>
+    <usb_vendor_id>0x045e</usb_vendor_id>
+    <usb_product_id>0x0779</usb_product_id>
+    <name>Microsoft LifeCam HD-3000</name>
+    <sensor>OmniVision OV9712</sensor>
+    <pixel_size_um>3.0</pixel_size_um>
+  </camera>
+
+  <!-- Microsoft LifeCam Cinema -->
+  <camera>
+    <usb_vendor_id>0x045e</usb_vendor_id>
+    <usb_product_id>0x075d</usb_product_id>
+    <name>Microsoft LifeCam Cinema</name>
+    <sensor>OmniVision OV9715</sensor>
+    <pixel_size_um>2.8</pixel_size_um>
+  </camera>
+
+  <!-- Creative Labs Live! Cam Sync HD (VF0770) -->
+  <camera>
+    <usb_vendor_id>0x041e</usb_vendor_id>
+    <usb_product_id>0x4095</usb_product_id>
+    <name>Creative Labs Live! Cam Sync HD</name>
+    <sensor>OmniVision OV9726</sensor>
+    <pixel_size_um>2.2</pixel_size_um>
+  </camera>
+
+  <!-- Raspberry Pi Camera Module v1 (over USB UVC bridge) -->
+  <camera>
+    <usb_vendor_id>0x2ca3</usb_vendor_id>
+    <usb_product_id>0x0001</usb_product_id>
+    <name>Raspberry Pi Camera v1 (UVC)</name>
+    <sensor>OmniVision OV5647</sensor>
+    <pixel_size_um>1.4</pixel_size_um>
+  </camera>
+
+  <!-- Raspberry Pi Camera Module v2 (over USB UVC bridge) -->
+  <camera>
+    <usb_vendor_id>0x2ca3</usb_vendor_id>
+    <usb_product_id>0x0002</usb_product_id>
+    <name>Raspberry Pi Camera v2 (UVC)</name>
+    <sensor>Sony IMX219</sensor>
+    <pixel_size_um>1.12</pixel_size_um>
+  </camera>
+
+  <!-- ===== Planetary / EAA cameras used for guiding ===== -->
+
+  <!-- Player One Neptune-C II (UVC mode) -->
+  <camera>
+    <usb_vendor_id>0x3202</usb_vendor_id>
+    <usb_product_id>0x0009</usb_product_id>
+    <name>Player One Neptune-C II</name>
+    <sensor>Sony IMX464</sensor>
+    <pixel_size_um>2.9</pixel_size_um>
+  </camera>
+
+  <!-- Svbony SV105 -->
+  <camera>
+    <usb_vendor_id>0x0547</usb_vendor_id>
+    <usb_product_id>0x2131</usb_product_id>
+    <name>Svbony SV105</name>
+    <sensor>OmniVision OV2710</sensor>
+    <pixel_size_um>3.0</pixel_size_um>
+  </camera>
+
+  <!-- Svbony SV205 -->
+  <camera>
+    <usb_vendor_id>0x0547</usb_vendor_id>
+    <usb_product_id>0x2132</usb_product_id>
+    <name>Svbony SV205</name>
+    <sensor>OmniVision OV2710</sensor>
+    <pixel_size_um>3.0</pixel_size_um>
+  </camera>
+
+</uvc_cameras>

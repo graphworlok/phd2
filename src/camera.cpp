@@ -197,6 +197,10 @@ extern "C"
 }
 #endif
 
+#if defined(V4L2_CAMERA)
+# include "cam_v4l2.h"
+#endif
+
 const wxString GuideCamera::DEFAULT_CAMERA_ID = wxEmptyString;
 
 double GuideCamera::GetProfilePixelSize()
@@ -372,6 +376,17 @@ wxArrayString GuideCamera::GuideCameraList()
     if (true == Camera_VIDEODEVICE.ProbeDevices())
     {
         CameraList.Add(_T("V4L(2) Camera"));
+    }
+#endif
+#if defined(V4L2_CAMERA)
+    {
+        wxArrayString v4l2names, v4l2ids;
+        CameraV4L2 probe;
+        if (probe.EnumCameras(v4l2names, v4l2ids))
+        {
+            for (size_t i = 0; i < v4l2names.size(); i++)
+                CameraList.Add(v4l2names[i]);
+        }
     }
 #endif
 #if defined(SIMULATOR)
@@ -634,6 +649,18 @@ GuideCamera *GuideCamera::Factory(const wxString& choice)
             }
 
             pReturn = new Camera_VIDEODEVICEClass();
+        }
+#endif
+#if defined(V4L2_CAMERA)
+        else if (choice.Contains(_T("/dev/video")))
+        {
+            // choice is the display name from EnumCameras, e.g.
+            // "PC Camera: (/dev/video0)".  Store it in Name so Connect()
+            // can extract the device path on first connect when no stored
+            // cameraId exists yet.
+            CameraV4L2 *cam = new CameraV4L2();
+            cam->Name = choice;
+            pReturn = cam;
         }
 #endif
         else

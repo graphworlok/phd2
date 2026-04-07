@@ -289,6 +289,9 @@ public:
     void OnHelp(wxCommandEvent& evt);
     void OnOverlay(wxCommandEvent& evt);
     void OnOverlaySlitCoords(wxCommandEvent& evt);
+    void OnPlateSolve(wxCommandEvent& evt);
+    void OnPlateSolveClear(wxCommandEvent& evt);
+    void OnPlateSolveComplete(wxThreadEvent& evt);
     void OnUpgrade(wxCommandEvent& evt);
     void OnHelpOnline(wxCommandEvent& evt);
     void OnHelpLogFolder(wxCommandEvent& evt);
@@ -631,6 +634,8 @@ enum
     MENU_XHAIR3,
     MENU_XHAIR4,
     MENU_XHAIR5,
+    MENU_PLATE_SOLVE,
+    MENU_PLATE_SOLVE_CLEAR,
     MENU_SLIT_OVERLAY_COORDS,
     MENU_TAKEDARKS,
     MENU_SERVER,

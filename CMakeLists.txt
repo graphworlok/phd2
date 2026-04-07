@@ -258,6 +258,8 @@ elseif(UNIX AND (NOT APPLE))
   list(APPEND cam_SRC
       ${phd_src_dir}/cam_qhy5.h
       ${phd_src_dir}/cam_qhy5.cpp
+      ${phd_src_dir}/cam_v4l2.h
+      ${phd_src_dir}/cam_v4l2.cpp
      )
 elseif(APPLE)
   # nothing else to add for Mac
@@ -502,6 +504,11 @@ if (WIN32)
 
       ${phd_src_dir}/comdispatch.h
       ${phd_src_dir}/comdispatch.cpp
+  )
+elseif(UNIX AND (NOT APPLE))
+  list(APPEND phd2_SRC
+      ${phd_src_dir}/astrometry_solver.h
+      ${phd_src_dir}/astrometry_solver.cpp
   )
 endif()
 source_group(src FILES ${phd2_SRC})
@@ -828,6 +835,11 @@ elseif(UNIX)
 
   target_link_libraries(phd2 X11 ${OpenCV_LIBS})
 
+  # Several bundled static camera SDKs (ZWO, QHY) define identical utility
+  # symbols (e.g. isLeapYear).  Allow the linker to silently use the first
+  # definition it encounters rather than failing.
+  target_link_options(phd2 PRIVATE -Wl,--allow-multiple-definition)
+
   set_target_properties(
     phd2
     PROPERTIES
@@ -1019,6 +1031,20 @@ if(UNIX AND NOT APPLE)
       endif()
     endforeach()
   endforeach()
+
+  # Install UVC data files (camera database and preset config)
+  foreach(_uvc_file uvc_cameras.xml uvc_config.ini)
+    add_custom_command(
+      TARGET phd2
+      POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        ${PHD_PROJECT_ROOT_DIR}/${_uvc_file}
+        $<TARGET_FILE_DIR:phd2>/${_uvc_file}
+    )
+    install(FILES ${PHD_PROJECT_ROOT_DIR}/${_uvc_file}
+            DESTINATION ${CMAKE_INSTALL_PREFIX}/share/phd2/)
+  endforeach()
+
 endif()
 
 ################################################################

@@ -38,6 +38,9 @@
 
 #include "aui_controls.h"
 #include "comet_tool.h"
+#ifdef __linux__
+# include "astrometry_solver.h"
+#endif
 #include "config_indi.h"
 #include "guiding_assistant.h"
 #include "phdupdate.h"
@@ -117,7 +120,10 @@ EVT_MENU(MENU_XHAIR2, MyFrame::OnOverlay)
 EVT_MENU(MENU_XHAIR3, MyFrame::OnOverlay)
 EVT_MENU(MENU_XHAIR4, MyFrame::OnOverlay)
 EVT_MENU(MENU_XHAIR5, MyFrame::OnOverlay)
+EVT_MENU(MENU_PLATE_SOLVE,       MyFrame::OnPlateSolve)
+EVT_MENU(MENU_PLATE_SOLVE_CLEAR, MyFrame::OnPlateSolveClear)
 EVT_MENU(MENU_SLIT_OVERLAY_COORDS, MyFrame::OnOverlaySlitCoords)
+EVT_THREAD(EVT_PLATE_SOLVE_COMPLETE, MyFrame::OnPlateSolveComplete)
 EVT_MENU(MENU_BOOKMARKS_SHOW, MyFrame::OnBookmarksShow)
 EVT_MENU(MENU_BOOKMARKS_SET_AT_LOCK, MyFrame::OnBookmarksSetAtLockPos)
 EVT_MENU(MENU_BOOKMARKS_SET_AT_STAR, MyFrame::OnBookmarksSetAtCurPos)
@@ -522,6 +528,9 @@ void MyFrame::SetupMenuBar()
     view_menu->AppendRadioItem(MENU_XHAIR3, _("&Coarse Grid"), _("Grid overlay"));
     view_menu->AppendRadioItem(MENU_XHAIR4, _("&RA/Dec"), _("RA and Dec overlay"));
     view_menu->AppendRadioItem(MENU_XHAIR5, _("Spectrograph S&lit"), _("Spectrograph slit overlay"));
+    view_menu->AppendSeparator();
+    view_menu->Append(MENU_PLATE_SOLVE,       _("&Plate Solve Field"),       _("Solve the current guide frame and overlay catalog stars"));
+    view_menu->Append(MENU_PLATE_SOLVE_CLEAR, _("Clea&r Plate Solve"),       _("Remove the plate-solve overlay"));
     view_menu->AppendSeparator();
     view_menu->Append(MENU_SLIT_OVERLAY_COORDS, _("Slit Position..."));
     view_menu->AppendSeparator();
@@ -3608,4 +3617,31 @@ void SetIntChoice(wxChoice *choice, int value)
 {
     if (!choice->SetStringSelection(wxString::Format("%d", value)))
         choice->SetSelection(0);
+}
+
+// ---------------------------------------------------------------------------
+// Plate-solve menu handlers
+// ---------------------------------------------------------------------------
+
+void MyFrame::OnPlateSolve(wxCommandEvent& WXUNUSED(evt))
+{
+    if (pGuider)
+        pGuider->StartPlateSolve();
+}
+
+void MyFrame::OnPlateSolveClear(wxCommandEvent& WXUNUSED(evt))
+{
+    if (pGuider)
+        pGuider->ClearPlateSolve();
+}
+
+void MyFrame::OnPlateSolveComplete(wxThreadEvent& evt)
+{
+#ifdef __linux__
+    PlateSolveResult *result = evt.GetPayload<PlateSolveResult *>();
+    if (pGuider)
+        pGuider->OnPlateSolveComplete(result); // guider takes ownership
+    else
+        delete result;
+#endif
 }

@@ -37,6 +37,9 @@
 #include "polardrift_tool.h"
 #include "staticpa_tool.h"
 #include "guiding_assistant.h"
+#ifdef __linux__
+# include "astrometry_solver.h"
+#endif
 
 // un-comment to log star deflections to a file
 // #define CAPTURE_DEFLECTIONS
@@ -200,6 +203,9 @@ Guider::Guider(wxWindow *parent, int xSize, int ySize)
     m_polarAlignCircleRadius = 0.0;
     m_polarAlignCircleCorrection = 1.0;
 
+    m_plateSolveResult = nullptr;
+    m_plateSolving = false;
+
     SetBackgroundStyle(wxBG_STYLE_CUSTOM);
     SetBackgroundColour(wxColour((unsigned char) 30, (unsigned char) 30, (unsigned char) 30));
 
@@ -208,6 +214,7 @@ Guider::Guider(wxWindow *parent, int xSize, int ySize)
 
 Guider::~Guider()
 {
+    delete m_plateSolveResult;
     delete m_displayedImage;
     delete m_pCurrentImage;
 
@@ -712,6 +719,40 @@ bool Guider::PaintHelper(wxAutoBufferedPaintDCBase& dc, wxMemoryDC& memDC)
         // draw static polar align stuff
         PolarDriftTool::PaintHelper(dc, m_scaleFactor);
         StaticPaTool::PaintHelper(dc, m_scaleFactor);
+
+#ifdef __linux__
+        // Plate-solve / astrometry overlay
+        if (m_overlayMode == OVERLAY_ASTROMETRY && m_plateSolveResult)
+        {
+            // Adjust CRPIX to track guide star drift since the solve.
+            // If the star has moved dx/dy pixels from its solve-time position,
+            // the sky rotated by the same amount – shift CRPIX accordingly.
+            PlateSolveResult tracked = *m_plateSolveResult;
+            const PHD_Point& curPos = CurrentPosition();
+            if (curPos.IsValid() && m_solveRefStarPos.IsValid())
+            {
+                tracked.wcs.crpix1 -= (curPos.X - m_solveRefStarPos.X);
+                tracked.wcs.crpix2 -= (curPos.Y - m_solveRefStarPos.Y);
+                // Shift each star's pixel position by the same delta
+                double dx = (curPos.X - m_solveRefStarPos.X) * m_scaleFactor;
+                double dy = (curPos.Y - m_solveRefStarPos.Y) * m_scaleFactor;
+                for (SolvedStar& s : tracked.stars)
+                {
+                    s.pixel_x -= (curPos.X - m_solveRefStarPos.X);
+                    s.pixel_y -= (curPos.Y - m_solveRefStarPos.Y);
+                }
+            }
+            DrawPlateSolveOverlay(dc, tracked, m_scaleFactor, XImgSize, YImgSize);
+        }
+        else if (m_overlayMode == OVERLAY_ASTROMETRY && m_plateSolving)
+        {
+            // Show "Solving…" indicator while the background thread runs
+            dc.SetFont(wxFont(10, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
+                              wxFONTWEIGHT_BOLD));
+            dc.SetTextForeground(wxColour(255, 220, 50));
+            dc.DrawText(_("Plate solving\xe2\x80\xa6"), 8, 8);
+        }
+#endif
 
         if (IsPaused())
         {
@@ -1955,3 +1996,97 @@ void Guider::BookmarkCurPosition()
         Update();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Plate-solve overlay methods
+// ---------------------------------------------------------------------------
+
+#ifdef __linux__
+
+void Guider::StartPlateSolve()
+{
+    if (m_plateSolving)
+        return; // already running
+
+    const usImage *img = CurrentImage();
+    if (!img || !img->ImageData)
+    {
+        pFrame->Alert(_("No guide image available for plate solving"));
+        return;
+    }
+
+    // Record the star position at solve time so we can track drift
+    m_solveRefStarPos = CurrentPosition();
+
+    // Derive a scale hint from calibration if available (arcsec/pixel)
+    double scaleLow = 0.0, scaleHigh = 0.0;
+    Mount *mount = TheScope();
+    if (mount && mount->IsCalibrated())
+    {
+        double pixRate = sqrt(mount->xRate() * mount->xRate() +
+                              mount->yRate() * mount->yRate());
+        // pixRate is px/sec; guide rate is ~15 arcsec/sec at sidereal for 1x
+        // This gives only a rough hint; use a ±5x bracket
+        if (pixRate > 0.0)
+        {
+            // Don't attempt to compute exact scale – use a safe wide bracket
+            scaleLow  = 0.1;
+            scaleHigh = 180.0;
+        }
+    }
+
+    m_plateSolving = true;
+    SetOverlayMode(OVERLAY_ASTROMETRY);
+    Refresh();
+
+    PlateSolveThread *thread = new PlateSolveThread(*img, scaleLow, scaleHigh);
+    thread->Run();
+}
+
+void Guider::ClearPlateSolve()
+{
+    delete m_plateSolveResult;
+    m_plateSolveResult = nullptr;
+    m_plateSolving = false;
+    m_solveRefStarPos.Invalidate();
+    Refresh();
+}
+
+void Guider::OnPlateSolveComplete(PlateSolveResult *result)
+{
+    m_plateSolving = false;
+
+    if (!result->success)
+    {
+        pFrame->Alert(wxString::Format(_("Plate solve failed: %s"), result->errorMsg));
+        delete result;
+        return;
+    }
+
+    delete m_plateSolveResult;
+    m_plateSolveResult = result;
+
+    // Capture current star position as the tracking reference
+    m_solveRefStarPos = CurrentPosition();
+
+    Debug.AddLine(wxString::Format(
+        "PlateSolve: center RA=%.4f Dec=%.4f scale=%.2f\"/px rot=%.1f deg, %d stars",
+        result->wcs.crval1, result->wcs.crval2,
+        result->wcs.pixScale, result->wcs.rotation,
+        (int) result->stars.size()));
+
+    SetOverlayMode(OVERLAY_ASTROMETRY);
+    Refresh();
+    Update();
+}
+
+#else // !__linux__
+
+void Guider::StartPlateSolve()
+{
+    pFrame->Alert(_("Plate solving requires astrometry.net and is only supported on Linux"));
+}
+void Guider::ClearPlateSolve() { }
+void Guider::OnPlateSolveComplete(PlateSolveResult *result) { delete result; }
+
+#endif // __linux__
