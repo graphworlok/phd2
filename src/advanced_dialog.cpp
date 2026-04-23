@@ -34,6 +34,7 @@
 
 #include "phd.h"
 #include "calstep_dialog.h"
+#include "noise_config_panel.h"
 
 #include <wx/tipwin.h>
 
@@ -189,6 +190,14 @@ AdvancedDialog::AdvancedDialog(MyFrame *pFrame)
     wxBoxSizer *pDevicesTabSizer = new wxBoxSizer(wxVERTICAL);
     m_pDevicesSettingsPanel->SetSizer(pDevicesTabSizer);
     m_pNotebook->AddPage(m_pDevicesSettingsPanel, _("Other Devices"));
+
+    // Noise-reduction pipeline pane
+    m_pNoiseSettingsPanel = new wxPanel(m_pNotebook);
+    wxBoxSizer *pNoiseTabSizer = new wxBoxSizer(wxVERTICAL);
+    m_pNoiseSettingsPanel->SetSizer(pNoiseTabSizer);
+    m_pNotebook->AddPage(m_pNoiseSettingsPanel, _("Noise"));
+    m_pNoisePanel = new NoiseConfigPanel(m_pNoiseSettingsPanel);
+    pNoiseTabSizer->Add(m_pNoisePanel, sizer_flags);
 
     BuildCtrlSets(); // Populates the m_brainCtrls map with all UI controls
 
@@ -461,6 +470,8 @@ void AdvancedDialog::LoadValues()
         m_pGuiderCtrlSet->LoadValues();
     if (m_pRotatorCtrlSet)
         m_pRotatorCtrlSet->LoadValues();
+    if (m_pNoisePanel)
+        m_pNoisePanel->LoadValues();
 
     // Mount sub-classes use a hybrid approach involving both CtrlSets and Panes
 
@@ -488,6 +499,8 @@ void AdvancedDialog::UnloadValues()
         m_pGuiderCtrlSet->UnloadValues();
     if (m_pRotatorCtrlSet)
         m_pRotatorCtrlSet->UnloadValues();
+    if (m_pNoisePanel)
+        m_pNoisePanel->UnloadValues();
 
     // Mount sub-classes use a hybrid approach involving both CtrlSets and Panes
 

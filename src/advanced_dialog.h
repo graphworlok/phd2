@@ -41,6 +41,7 @@ class MyFrameConfigDialogCtrlSet;
 class MountConfigDialogCtrlSet;
 class CameraConfigDialogPane;
 class GuiderConfigDialogPane;
+class NoiseConfigPanel;
 class wxTipWindow;
 
 enum TAB_PAGES
@@ -78,6 +79,8 @@ class AdvancedDialog : public wxDialog
     wxPanel *m_pGuiderSettingsPanel;
     wxPanel *m_pScopeSettingsPanel;
     wxPanel *m_pDevicesSettingsPanel;
+    wxPanel *m_pNoiseSettingsPanel = nullptr;
+    NoiseConfigPanel *m_pNoisePanel = nullptr;
     wxTipWindow *m_tip;
     wxTimer *m_tipTimer;
     bool m_imageScaleChanged;
