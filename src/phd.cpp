@@ -36,6 +36,7 @@
 
 #include "noise_pipeline.h"
 #include "phdupdate.h"
+#include "star_catalog.h"
 
 #include <curl/curl.h>
 #include <memory>
@@ -626,6 +627,7 @@ bool PhdApp::OnInit()
 
     PHD2Updater::InitUpdater();
 
+    InitStarCatalog();
     InitNoisePipeline();
 
     return true;
@@ -642,6 +644,7 @@ int PhdApp::OnExit()
     PhdController::OnAppExit();
 
     ShutdownNoisePipeline();
+    ShutdownStarCatalog();
 
     delete pConfig;
     pConfig = nullptr;

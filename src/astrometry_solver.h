@@ -30,7 +30,17 @@ struct SolvedStar
     double   ra;         // degrees J2000
     double   dec;        // degrees J2000
     float    flux;
-    wxString catalog_id; // Tycho-2 / 2MASS identifier, or "" if unavailable
+    wxString catalog_id; // raw INDEX_ID from solve-field's .corr (Tycho-2 /
+                         // 2MASS / Gaia etc. depending on index used)
+
+    // Populated post-solve by cross-match against the local bright-star
+    // catalog (star_catalog.cpp). All optional; empty / NaN if no match.
+    wxString name;       // "Sirius"
+    wxString bayer;      // "alpha CMa"
+    wxString hd;         // "48915"
+    wxString hip;        // "32349"
+    wxString spectrum;   // "A1V"
+    float    vmag = 0.0f / 0.0f; // NaN
 };
 
 struct WCSSolution

@@ -14,6 +14,7 @@
 # include "astrometry_solver.h"
 # include "fitsiowrap.h"
 # include "fitsio.h"
+# include "star_catalog.h"
 
 # include <wx/filename.h>
 # include <wx/stdpaths.h>
@@ -125,6 +126,25 @@ wxThread::ExitCode PlateSolveThread::Entry()
         }
         if (wxFileExists(corrPath))
             ParseCorr(corrPath, &result->stars);
+
+        // Cross-match each matched star against the local catalog so the
+        // overlay can show real names / HD / HIP / magnitude rather than
+        // the bare solve-field INDEX_ID.
+        if (pStarCatalog && pStarCatalog->IsLoaded())
+        {
+            for (SolvedStar& s : result->stars)
+            {
+                const StarCatalogEntry *m = pStarCatalog->FindNearest(s.ra, s.dec, 15.0);
+                if (!m) continue;
+                s.name     = m->name;
+                s.bayer    = m->bayer;
+                s.hd       = m->hd;
+                s.hip      = m->hip;
+                s.spectrum = m->spectrum;
+                s.vmag     = m->vmag;
+            }
+        }
+
         result->success = true;
     }
 
@@ -329,13 +349,48 @@ void DrawPlateSolveOverlay(wxDC& dc,
         float normFlux = (star.flux > 0.0f) ? star.flux : 1.0f;
         int radius = wxMax(4, wxMin(14, (int)(3.0 + log10(normFlux + 1.0) * 2.5)));
 
-        dc.SetPen(wxPen(wxColour(0, 200, 220), 1, wxPENSTYLE_SOLID));
+        // Named / catalog-matched stars get a brighter circle to stand
+        // out from the unmatched solve-field stars.
+        const bool named = !star.name.empty() || !star.bayer.empty() ||
+                           !star.hd.empty()   || !star.hip.empty();
+        dc.SetPen(wxPen(named ? wxColour(255, 220, 80)
+                              : wxColour(0,   200, 220), 1, wxPENSTYLE_SOLID));
         dc.DrawCircle(sx, sy, radius);
 
-        if (!star.catalog_id.empty())
+        // Build up to two label lines. Primary = the friendliest name we
+        // have. Secondary = a cross-reference designation + magnitude.
+        wxString line1, line2;
+        if      (!star.name.empty())  line1 = star.name;
+        else if (!star.bayer.empty()) line1 = star.bayer;
+        else if (!star.hd.empty())    line1 = wxT("HD ")  + star.hd;
+        else if (!star.hip.empty())   line1 = wxT("HIP ") + star.hip;
+        else                          line1 = star.catalog_id;
+
+        // Second line: the *other* designation (if we had a name, show
+        // HD/HIP; if we had Bayer, show HD; etc.), plus magnitude.
+        wxString xref;
+        if (!star.name.empty() || !star.bayer.empty())
         {
-            dc.SetTextForeground(wxColour(0, 200, 220));
-            dc.DrawText(star.catalog_id, sx + radius + 2, sy + radius + 2);
+            if      (!star.hd.empty())  xref = wxT("HD ")  + star.hd;
+            else if (!star.hip.empty()) xref = wxT("HIP ") + star.hip;
+        }
+        if (std::isfinite((double) star.vmag))
+        {
+            if (!xref.empty()) xref += wxT("  ");
+            xref += wxString::Format(wxT("%.1fm"), star.vmag);
+        }
+        line2 = xref;
+
+        if (!line1.empty())
+        {
+            dc.SetTextForeground(named ? wxColour(255, 220, 80)
+                                       : wxColour(0,   200, 220));
+            dc.DrawText(line1, sx + radius + 2, sy - 2);
+            if (!line2.empty())
+            {
+                dc.SetTextForeground(wxColour(180, 180, 180));
+                dc.DrawText(line2, sx + radius + 2, sy + 10);
+            }
         }
     }
 

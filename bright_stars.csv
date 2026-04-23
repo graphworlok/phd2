@@ -1,0 +1,36 @@
+# PHD2 star catalog for plate-solve overlay tagging.
+#
+# Format: ra_deg, dec_deg, vmag, hd, hip, name, bayer, spectrum
+#   - Positions are J2000 (decimal degrees).
+#   - Comments start with # and are ignored.
+#   - Empty fields are permitted; trailing fields may be omitted.
+#   - Add your own rows, or replace this file with a larger catalog
+#     exported from VizieR / SIMBAD / HYG / BSC5. The lookup is a
+#     linear scan, so tens of thousands of entries remain fast;
+#     beyond that consider a trimmed catalogue by magnitude cut.
+#
+# Starter set: 1st-magnitude stars, a few 2nd-magnitude ones, and Polaris.
+ra_deg,dec_deg,vmag,hd,hip,name,bayer,spectrum
+101.287155,-16.716116,-1.46,48915,32349,Sirius,alpha CMa,A1V
+95.987958,-52.695661,-0.72,45348,30438,Canopus,alpha Car,A9II
+213.915300,19.182410,-0.04,124897,69673,Arcturus,alpha Boo,K1.5III
+279.234735,38.783689,0.03,172167,91262,Vega,alpha Lyr,A0V
+79.172328,45.997991,0.08,34029,24608,Capella,alpha Aur,G5III
+78.634467,-8.201638,0.13,34085,24436,Rigel,beta Ori,B8Iab
+114.825493,5.224988,0.34,61421,37279,Procyon,alpha CMi,F5IV
+88.792939,7.407064,0.42,39801,27989,Betelgeuse,alpha Ori,M1-2Ia
+24.428523,-57.236755,0.46,10144,7588,Achernar,alpha Eri,B6Vpe
+297.695827,8.868322,0.77,187642,97649,Altair,alpha Aql,A7V
+68.980163,16.509302,0.87,29139,21421,Aldebaran,alpha Tau,K5III
+201.298247,-11.161319,0.98,116658,65474,Spica,alpha Vir,B1III-IV
+247.351915,-26.432002,1.06,148478,80763,Antares,alpha Sco,M1.5Iab
+116.328958,28.026199,1.14,62509,37826,Pollux,beta Gem,K0III
+344.412693,-29.622236,1.16,216956,113368,Fomalhaut,alpha PsA,A3V
+310.357979,45.280339,1.25,197345,102098,Deneb,alpha Cyg,A2Ia
+152.092962,11.967209,1.35,87901,49669,Regulus,alpha Leo,B8IVn
+81.282764,6.349703,1.64,35468,25336,Bellatrix,gamma Ori,B2III
+113.649428,31.888276,1.58,60179,36850,Castor,alpha Gem,A1V
+84.053389,-1.201919,1.69,37128,26311,Alnilam,epsilon Ori,B0Ia
+85.189694,-1.942572,1.77,37742,26727,Alnitak,zeta Ori,O9.5Ib
+200.981429,54.925362,2.04,116656,65378,Mizar,zeta UMa,A2V
+37.954560,89.264109,1.98,8890,11767,Polaris,alpha UMi,F7Ib

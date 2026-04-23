@@ -484,6 +484,8 @@ set(phd2_SRC
 
   ${phd_src_dir}/star.cpp
   ${phd_src_dir}/star.h
+  ${phd_src_dir}/star_catalog.cpp
+  ${phd_src_dir}/star_catalog.h
   ${phd_src_dir}/star_profile.cpp
   ${phd_src_dir}/star_profile.h
   ${phd_src_dir}/target.cpp
@@ -1038,16 +1040,17 @@ if(UNIX AND NOT APPLE)
     endforeach()
   endforeach()
 
-  # Install UVC data files (camera database and preset config)
-  foreach(_uvc_file uvc_cameras.xml uvc_config.ini)
+  # Install UVC data files (camera database and preset config) and the
+  # bright-star catalog used for plate-solve overlay tagging.
+  foreach(_data_file uvc_cameras.xml uvc_config.ini bright_stars.csv)
     add_custom_command(
       TARGET phd2
       POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        ${PHD_PROJECT_ROOT_DIR}/${_uvc_file}
-        $<TARGET_FILE_DIR:phd2>/${_uvc_file}
+        ${PHD_PROJECT_ROOT_DIR}/${_data_file}
+        $<TARGET_FILE_DIR:phd2>/${_data_file}
     )
-    install(FILES ${PHD_PROJECT_ROOT_DIR}/${_uvc_file}
+    install(FILES ${PHD_PROJECT_ROOT_DIR}/${_data_file}
             DESTINATION ${CMAKE_INSTALL_PREFIX}/share/phd2/)
   endforeach()
 
