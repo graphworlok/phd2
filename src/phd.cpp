@@ -34,6 +34,7 @@
 
 #include "phd.h"
 
+#include "noise_pipeline.h"
 #include "phdupdate.h"
 
 #include <curl/curl.h>
@@ -625,6 +626,8 @@ bool PhdApp::OnInit()
 
     PHD2Updater::InitUpdater();
 
+    InitNoisePipeline();
+
     return true;
 }
 
@@ -637,6 +640,8 @@ int PhdApp::OnExit()
     ImageLogger::Destroy();
 
     PhdController::OnAppExit();
+
+    ShutdownNoisePipeline();
 
     delete pConfig;
     pConfig = nullptr;

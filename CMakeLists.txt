@@ -413,6 +413,10 @@ set(phd2_SRC
   ${phd_src_dir}/myframe.cpp
   ${phd_src_dir}/myframe.h
   ${phd_src_dir}/myframe_events.cpp
+  ${phd_src_dir}/noise_pipeline.cpp
+  ${phd_src_dir}/noise_pipeline.h
+  ${phd_src_dir}/noise_stage_rolling_bg.cpp
+  ${phd_src_dir}/noise_stage_rolling_bg.h
   ${phd_src_dir}/nudge_lock.cpp
   ${phd_src_dir}/nudge_lock.h
   ${phd_src_dir}/onboard_st4.cpp

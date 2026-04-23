@@ -38,6 +38,7 @@
 
 #include "camera.h"
 #include "gear_simulator.h"
+#include "noise_pipeline.h"
 
 #include <wx/stdpaths.h>
 
@@ -1501,6 +1502,12 @@ void GuideCamera::SubtractDark(usImage& img)
     {
         Subtract(img, *CurrentDarkFrame);
     }
+
+    // Plate-solve-aware noise reduction pipeline. Runs after dark/defect
+    // correction so its rolling background model ingests frames that have
+    // already had any static calibration applied.
+    if (pNoise)
+        pNoise->Process(img, nullptr);
 }
 
 static void InitiateReconnect()
