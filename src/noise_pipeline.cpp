@@ -25,8 +25,12 @@ void NoisePipeline::Process(usImage& img, const PlateSolveResult *solve)
     {
         if (!stage->IsEnabled())
             continue;
-        stage->Apply(img, solve);
+        // Observe must see the RAW frame; Apply mutates img in place.
+        // Running Apply first made Observe update the model from the already-
+        // subtracted residual, which collapses the model toward zero and
+        // effectively turns subtraction into a no-op after a few frames.
         stage->Observe(img, solve);
+        stage->Apply(img, solve);
     }
 }
 

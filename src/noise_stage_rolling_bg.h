@@ -43,6 +43,17 @@ class RollingBackgroundStage : public NoiseReductionStage
     float m_starQuantile;   // fallback bright-pixel rejection quantile
     bool  m_floorAtZero;    // clamp output to >= 0 (else apply pedestal)
     int   m_frameCount;     // frames observed since Reset()
+    bool  m_diagnostics;    // emit per-frame NoiseDiag lines to debug log
+
+    // Counters captured during Observe, consumed by the next Apply() call
+    // so a single diagnostic line can describe both halves of one frame.
+    size_t m_diagMaskedCat;
+    size_t m_diagMaskedQuantile;
+    size_t m_diagOutliers;
+    size_t m_diagUsed;
+    float  m_diagAlpha;
+    float  m_diagUpperThresh;
+    bool   m_diagHaveCatalog;
 
     void Allocate(const wxSize& sz);
     void BuildCatalogMask(const PlateSolveResult *solve,
@@ -76,6 +87,8 @@ public:
     void  SetMaskRadius(int v)     { m_maskRadius = v; }
     int   GetMinSamples() const    { return m_minSamples; }
     void  SetMinSamples(int v)     { m_minSamples = v; }
+    bool  GetDiagnostics() const   { return m_diagnostics; }
+    void  SetDiagnostics(bool v)   { m_diagnostics = v; }
 };
 
 #endif // NOISE_STAGE_ROLLING_BG_H_INCLUDED

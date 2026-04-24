@@ -115,6 +115,15 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
                               "for downstream stretches and statistics."));
     rbgBox->Add(m_floorZero, 0, wxALL, 6);
 
+    m_diagnostics = new wxCheckBox(rbgBox->GetStaticBox(), wxID_ANY,
+                                   _("Emit per-frame diagnostic lines to debug log"));
+    m_diagnostics->SetToolTip(_("Writes a CSV-style 'NoiseDiag,frame=...' line per "
+                                "frame to the PHD2 debug log. Useful for inspecting "
+                                "before/after statistics, model coverage and mask "
+                                "counts. Off by default - adds a couple of histogram "
+                                "passes per frame when on."));
+    rbgBox->Add(m_diagnostics, 0, wxALL, 6);
+
     wxBoxSizer *btnRow = new wxBoxSizer(wxHORIZONTAL);
     m_resetBtn = new wxButton(rbgBox->GetStaticBox(), wxID_ANY, _("Reset model"));
     m_resetBtn->SetToolTip(_("Discard the accumulated background model. The "
@@ -158,6 +167,7 @@ void NoiseConfigPanel::LoadValues()
     m_warmup->SetValue(pConfig->Profile.GetInt(p + wxT("WarmupSamples"), 16));
     m_starQuantile->SetValue(pConfig->Profile.GetDouble(p + wxT("StarQuantile"), 0.995));
     m_floorZero->SetValue(pConfig->Profile.GetBoolean(p + wxT("FloorAtZero"), true));
+    m_diagnostics->SetValue(s->GetDiagnostics());
 
     UpdateStatus();
 }
@@ -173,6 +183,7 @@ void NoiseConfigPanel::UnloadValues()
     s->SetOutlierSigma((float) m_outlierSigma->GetValue());
     s->SetMaskRadius(m_maskRadius->GetValue());
     s->SetMinSamples(m_minSamples->GetValue());
+    s->SetDiagnostics(m_diagnostics->GetValue());
 
     const wxString p = wxT("/NoisePipeline/RollingBackground/");
     pConfig->Profile.SetInt(p + wxT("WarmupSamples"), m_warmup->GetValue());
