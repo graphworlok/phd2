@@ -564,6 +564,12 @@ bool CameraV4L2::Capture(usImage& img, const CaptureParams& captureParams)
         }
     } while (sw.Time() < duration);
 
+    // Standard post-capture hook: runs dark/defect correction and the
+    // noise-reduction pipeline. Every other camera backend calls this;
+    // the V4L2 backend was missing it, which is why pNoise->Process
+    // never fired for UVC cameras.
+    SubtractDark(img);
+
     img.CalcStats();
     return false;
 }
