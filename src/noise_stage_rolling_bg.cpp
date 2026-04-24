@@ -171,7 +171,7 @@ bool RollingBackgroundStage::Apply(usImage& img, const PlateSolveResult * /*solv
         for (size_t i = 0; i < n; ++i)
         {
             const float v = (float) pix[i] - bg[i];
-            pix[i] = (unsigned short) std::clamp(v, 0.0f, 65535.0f);
+            pix[i] = (unsigned short) std::min(std::max(v, 0.0f), 65535.0f);
         }
     }
     else
@@ -182,7 +182,7 @@ bool RollingBackgroundStage::Apply(usImage& img, const PlateSolveResult * /*solv
         for (size_t i = 0; i < n; ++i)
         {
             const float v = (float) pix[i] - bg[i] + PEDESTAL;
-            pix[i] = (unsigned short) std::clamp(v, 0.0f, 65535.0f);
+            pix[i] = (unsigned short) std::min(std::max(v, 0.0f), 65535.0f);
         }
     }
     return true;
