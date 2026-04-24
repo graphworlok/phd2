@@ -623,6 +623,17 @@ double AdvancedDialog::PercentChange(double oldVal, double newVal)
 // cleared, MinMoves are set to defaults based on new image scale
 void AdvancedDialog::MakeImageScaleAdjustments()
 {
+    // Guard against changing focal length with no equipment connected: a
+    // >5% FL change queues this routine, which dereferences pCamera and
+    // TheScope() unconditionally and crashes if either is absent. The
+    // existing pMount check below suggests the original author only
+    // considered the mount case.
+    if (!pCamera || !TheScope())
+    {
+        Debug.Write("Image scale change deferred: camera or scope not connected\n");
+        return;
+    }
+
     auto binning = pCamera->GetBinning();
     auto focalLength = pFrame->GetFocalLength();
     auto pixelSize = pCamera->GetCameraPixelSize();
