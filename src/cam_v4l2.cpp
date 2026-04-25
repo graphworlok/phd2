@@ -59,6 +59,7 @@
 # include <algorithm>
 # include <cerrno>
 # include <climits>
+# include <cmath>
 # include <cstring>
 # include <sys/ioctl.h>
 # include <sys/mman.h>
@@ -476,12 +477,49 @@ bool CameraV4L2::Connect(const wxString& camId)
                 Name = info.name;
                 m_dbCameraName  = info.name;
                 m_dbSensorName  = info.sensor;
-                m_dbPixelSizeUm = info.pixelSizeUm;
-                if (info.pixelSizeUm > 0.0)
-                    SetCameraPixelSize(info.pixelSizeUm);
+
+                // Resolve the sensor name through sensors.xml. That
+                // database carries authoritative pixel size, geometry
+                // and noise figures; uvc_cameras.xml's pixel_size_um
+                // field is now a legacy fallback used only when the
+                // sensor isn't catalogued.
+                double resolvedPixelUm = 0.0;
+                const Sensor *s = !info.sensor.empty()
+                                ? SensorDatabase::FindNoCase(info.sensor)
+                                : nullptr;
+                if (s && s->pixelSizeUm > 0.0)
+                {
+                    resolvedPixelUm = s->pixelSizeUm;
+                    if (info.pixelSizeUm > 0.0 &&
+                        std::fabs(info.pixelSizeUm - s->pixelSizeUm) > 0.05)
+                    {
+                        Debug.AddLine(wxString::Format(
+                            "V4L2: uvc_cameras.xml pixel_size_um=%.3f "
+                            "disagrees with sensors.xml '%s' (%.3f) - "
+                            "using sensors.xml",
+                            info.pixelSizeUm, s->name, s->pixelSizeUm));
+                    }
+                }
+                else if (info.pixelSizeUm > 0.0)
+                {
+                    resolvedPixelUm = info.pixelSizeUm;
+                    if (!info.sensor.empty())
+                    {
+                        Debug.AddLine(wxString::Format(
+                            "V4L2: sensor '%s' not in sensors.xml; "
+                            "using uvc_cameras.xml pixel_size_um=%.3f",
+                            info.sensor, info.pixelSizeUm));
+                    }
+                }
+
+                m_dbPixelSizeUm = resolvedPixelUm;
+                if (resolvedPixelUm > 0.0)
+                    SetCameraPixelSize(resolvedPixelUm);
+
                 Debug.AddLine(wxString::Format(
-                    "V4L2: matched USB %04x:%04x => %s, sensor=%s, pixel=%.2f um",
-                    vid, pid, info.name, info.sensor, info.pixelSizeUm));
+                    "V4L2: matched USB %04x:%04x => %s, sensor=%s, pixel=%.2f um (%s)",
+                    vid, pid, info.name, info.sensor, resolvedPixelUm,
+                    s ? "sensors.xml" : "uvc_cameras.xml"));
             }
             else
             {
@@ -1362,6 +1400,42 @@ bool CameraV4L2::LoadUvcDatabase(std::vector<UVCCameraInfo>& db)
 
     Debug.AddLine(wxString::Format("V4L2: loaded %zu entries from uvc_cameras.xml",
         db.size()));
+
+    // Coherence check: every <sensor> reference should resolve in
+    // sensors.xml. Missing entries don't break anything (the
+    // pixel_size_um field is still honoured) but they do mean the user
+    // can't pick that sensor from the V4L2 property dialog dropdown,
+    // and the noise pipeline can't access the richer per-sensor info.
+    // Warnings are de-duplicated across entries that share a sensor.
+    if (!db.empty())
+    {
+        std::vector<wxString> warned;
+        size_t unknown = 0;
+        for (const UVCCameraInfo& e : db)
+        {
+            if (e.sensor.empty())
+                continue;
+            if (SensorDatabase::FindNoCase(e.sensor))
+                continue;
+            ++unknown;
+            bool already = false;
+            for (const wxString& w : warned)
+                if (w.CmpNoCase(e.sensor) == 0) { already = true; break; }
+            if (already)
+                continue;
+            warned.push_back(e.sensor);
+            Debug.AddLine(wxString::Format(
+                "V4L2: uvc_cameras.xml references sensor '%s' "
+                "which is not in sensors.xml - consider adding it",
+                e.sensor));
+        }
+        if (unknown == 0)
+        {
+            Debug.AddLine("V4L2: all uvc_cameras.xml sensor names "
+                          "resolve in sensors.xml");
+        }
+    }
+
     return !db.empty();
 }
 

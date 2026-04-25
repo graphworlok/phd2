@@ -2,15 +2,23 @@
 <!--
   uvc_cameras.xml  –  PHD2 UVC / V4L2 camera database
   =====================================================
-  Maps USB Vendor ID + Product ID to sensor name and pixel size.
+  Maps USB Vendor ID + Product ID to a human-readable camera name and a
+  sensor identifier. The sensor identifier is a *key into sensors.xml*,
+  which carries the authoritative pixel size, array geometry, native
+  bit depth, full well and read noise figures.
 
   Fields:
     usb_vendor_id  : USB vendor ID  (hex with 0x prefix, or decimal)
     usb_product_id : USB product ID (hex with 0x prefix, or decimal)
     name           : Human-readable camera name (shown in PHD2 UI)
-    sensor         : Image sensor part number / name
-    pixel_size_um  : Physical pixel pitch in micrometers (µm).
-                     Set to 0 or omit if unknown.
+    sensor         : Sensor part number / family name, must match a
+                     <name> entry in sensors.xml (case-insensitive).
+                     PHD2 logs a warning at startup if it doesn't.
+    pixel_size_um  : LEGACY fallback. Used only when the sensor is not
+                     catalogued in sensors.xml. New entries should
+                     omit this and add the sensor to sensors.xml
+                     instead so noise / SNR estimation can use the
+                     richer per-sensor data.
 
   To contribute an entry, open a pull request against the PHD2 repository.
   Sources: manufacturer data sheets, CMOS sensor data sheets, EOSHD/CloudyNights
