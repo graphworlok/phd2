@@ -419,6 +419,8 @@ set(phd2_SRC
   ${phd_src_dir}/noise_pipeline.h
   ${phd_src_dir}/noise_stage_rolling_bg.cpp
   ${phd_src_dir}/noise_stage_rolling_bg.h
+  ${phd_src_dir}/sensor_db.cpp
+  ${phd_src_dir}/sensor_db.h
   ${phd_src_dir}/nudge_lock.cpp
   ${phd_src_dir}/nudge_lock.h
   ${phd_src_dir}/onboard_st4.cpp
@@ -1059,7 +1061,7 @@ if(UNIX AND NOT APPLE)
 
   # Install UVC data files (camera database and preset config) and the
   # bright-star catalog used for plate-solve overlay tagging.
-  foreach(_data_file uvc_cameras.xml uvc_config.ini bright_stars.csv)
+  foreach(_data_file uvc_cameras.xml uvc_config.ini bright_stars.csv sensors.xml)
     add_custom_command(
       TARGET phd2
       POST_BUILD

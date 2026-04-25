@@ -280,6 +280,20 @@ public:
     // the caller will sanitise it before use as a filename component.
     virtual wxString GetCurrentModeTag() const { return wxEmptyString; }
 
+    // Per-camera selected sensor name (matches a row in sensors.xml).
+    // Persisted under the camera's hardware id when one is available,
+    // otherwise under a profile-level fallback key. Empty string = no
+    // explicit selection (the backend's own report, if any, wins).
+    wxString GetSelectedSensorName() const;
+    void     SetSelectedSensorName(const wxString& name);
+
+    // Convenience: looks up GetSelectedSensorName() in the sensor DB
+    // and, if the entry has a non-zero pixel size, applies it to the
+    // camera. Called automatically after a sensor is set, but exposed
+    // so callers (e.g. property dialogs on apply) can re-trigger the
+    // resolution explicitly. Returns true if pixel size changed.
+    bool ApplySelectedSensorPixelSize();
+
     // Convert a hardware id to a string safe to embed in a filename:
     // colons, slashes, backslashes and whitespace become underscores;
     // anything outside [A-Za-z0-9_.-] is replaced too. Empty input

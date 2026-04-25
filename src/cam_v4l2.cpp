@@ -45,6 +45,7 @@
 #ifdef V4L2_CAMERA
 
 # include "cam_v4l2.h"
+# include "sensor_db.h"
 
 # include <wx/stdpaths.h>
 # include <wx/dir.h>
@@ -642,6 +643,12 @@ bool CameraV4L2::Connect(const wxString& camId)
     }
 
     Connected = true;
+
+    // Apply any per-camera sensor pick now so plate-solving and the
+    // noise pipeline see the correct pixel size on the very first
+    // frame. Falls through silently when nothing is selected.
+    ApplySelectedSensorPixelSize();
+
     return false;
 }
 
@@ -1575,6 +1582,7 @@ public:
     // nullptr if the control is unavailable on this device
     wxChoice   *m_resolution;
     wxChoice   *m_expMode;
+    wxChoice   *m_sensor;       // sensor selection (always available)
     wxSpinCtrl *m_brightness;
     wxSpinCtrl *m_contrast;
     wxSpinCtrl *m_gamma;
@@ -1630,6 +1638,7 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
       m_cam(cam),
       m_resolution(nullptr),
       m_expMode(nullptr),
+      m_sensor(nullptr),
       m_brightness(nullptr),
       m_contrast(nullptr),
       m_gamma(nullptr)
@@ -1748,6 +1757,46 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
         grid->Add(m_resolution, wxSizerFlags().Expand().Border(wxALL, 4));
     }
 
+    // Sensor selection. Always offered: it's a property of the
+    // physical hardware, not the V4L2 driver, and is useful even when
+    // no other control is exposed.
+    {
+        grid->Add(new wxStaticText(this, wxID_ANY, _("Sensor:")),
+                  wxSizerFlags().Align(wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT).Border(wxALL, 4));
+
+        wxArrayString senChoices;
+        senChoices.Add(_("(auto / unknown)"));
+        const wxArrayString names = SensorDatabase::GetAllNames();
+        for (size_t i = 0; i < names.size(); i++)
+            senChoices.Add(names[i]);
+
+        m_sensor = new wxChoice(this, wxID_ANY, wxDefaultPosition,
+                                wxDefaultSize, senChoices);
+
+        // Pick the initial selection: explicit per-camera choice wins;
+        // fall back to whatever uvc_cameras.xml said about this VID:PID.
+        wxString preset = cam->GetSelectedSensorName();
+        if (preset.empty())
+            preset = cam->m_dbSensorName;
+
+        int sel = 0;
+        if (!preset.empty())
+        {
+            int idx = m_sensor->FindString(preset, true /*case-sensitive*/);
+            if (idx == wxNOT_FOUND)
+                idx = m_sensor->FindString(preset, false);
+            if (idx != wxNOT_FOUND)
+                sel = idx;
+        }
+        m_sensor->SetSelection(sel);
+        m_sensor->SetToolTip(_("Sensor part number. Used to look up pixel "
+                               "size and physical sensor properties when "
+                               "the backend can't report them. "
+                               "Selection is remembered per-camera (by "
+                               "hardware id) and survives reconnects."));
+        grid->Add(m_sensor, wxSizerFlags().Expand().Border(wxALL, 4));
+    }
+
     // Exposure mode
     if (cam->m_ctrlExposureAuto.available)
     {
@@ -1831,6 +1880,19 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
 void V4L2PropDlg::ApplySettings()
 {
     Debug.AddLine("V4L2: applying property dialog settings");
+
+    // Sensor selection
+    if (m_sensor)
+    {
+        int sel = m_sensor->GetSelection();
+        // index 0 == "(auto / unknown)" -> empty string
+        wxString chosen;
+        if (sel > 0)
+            chosen = m_sensor->GetString(sel);
+        m_cam->SetSelectedSensorName(chosen);
+        Debug.AddLine(wxString::Format("V4L2: selected sensor='%s'",
+            chosen.empty() ? wxString("<auto>") : chosen));
+    }
 
     // Resolution change
     if (m_resolution)

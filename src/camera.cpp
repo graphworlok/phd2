@@ -39,6 +39,7 @@
 #include "camera.h"
 #include "gear_simulator.h"
 #include "noise_pipeline.h"
+#include "sensor_db.h"
 
 #include <wx/stdpaths.h>
 
@@ -263,6 +264,56 @@ wxString GuideCamera::HardwareIdToFileTag(const wxString& hwId)
 static int CompareNoCase(const wxString& first, const wxString& second)
 {
     return first.CmpNoCase(second);
+}
+
+// Per-camera config key for the selected sensor name. Mirrors the
+// pattern used by the noise pipeline: per-camera when hwid is known,
+// fall back to a profile-level key otherwise so backends without a
+// hardware id (most ASCOM, vendor-SDK shims) still get a usable
+// setting carried per profile.
+static wxString SelectedSensorConfigKey(const GuideCamera *cam)
+{
+    if (cam)
+    {
+        const wxString tag =
+            GuideCamera::HardwareIdToFileTag(cam->GetHardwareId());
+        if (!tag.empty())
+            return wxT("/Cameras/") + tag + wxT("/SelectedSensor");
+    }
+    return wxT("/camera/SelectedSensor");
+}
+
+wxString GuideCamera::GetSelectedSensorName() const
+{
+    return pConfig ? pConfig->Profile.GetString(SelectedSensorConfigKey(this),
+                                                wxEmptyString)
+                   : wxEmptyString;
+}
+
+void GuideCamera::SetSelectedSensorName(const wxString& name)
+{
+    if (pConfig)
+        pConfig->Profile.SetString(SelectedSensorConfigKey(this), name);
+    ApplySelectedSensorPixelSize();
+}
+
+bool GuideCamera::ApplySelectedSensorPixelSize()
+{
+    const wxString sel = GetSelectedSensorName();
+    if (sel.empty())
+        return false;
+    const Sensor *s = SensorDatabase::Find(sel);
+    if (!s)
+        s = SensorDatabase::FindNoCase(sel);
+    if (!s || s->pixelSizeUm <= 0.0)
+        return false;
+    if (m_pixelSize == s->pixelSizeUm)
+        return false;
+    m_pixelSize = s->pixelSizeUm;
+    Debug.AddLine(wxString::Format(
+        "Camera: applied pixel size %.3f um from sensor '%s'",
+        s->pixelSizeUm, sel));
+    return true;
 }
 
 static wxString INDICamName()
