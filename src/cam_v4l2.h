@@ -197,6 +197,7 @@ public:
     bool GetDevicePixelSize(double *devPixelSize) override;
     void ShowPropertyDialog() override;
     wxString GetHardwareId() const override;
+    wxString GetCurrentModeTag() const override;
 
 private:
     // Cached at Connect() time so GetHardwareId() is callable on any

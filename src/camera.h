@@ -267,6 +267,19 @@ public:
     // profile/geometry-based behavior. Backwards compatible.
     virtual wxString GetHardwareId() const { return wxEmptyString; }
 
+    // Optional tag identifying the *current capture mode* (pixel format,
+    // bit depth, etc.). Used by the noise pipeline so a format change on
+    // the same physical camera invalidates the running model rather than
+    // contaminating it with values on a different scale.
+    //
+    // BPMs and dark libraries deliberately do *not* consult this value -
+    // a hot pixel is a sensor-level property and is invariant across
+    // pixel formats. Default returns empty: backends without a notion of
+    // capture mode opt out and the noise tag falls back to the bare
+    // hardware id. Returned string should be ASCII alpha/digits only;
+    // the caller will sanitise it before use as a filename component.
+    virtual wxString GetCurrentModeTag() const { return wxEmptyString; }
+
     // Convert a hardware id to a string safe to embed in a filename:
     // colons, slashes, backslashes and whitespace become underscores;
     // anything outside [A-Za-z0-9_.-] is replaced too. Empty input

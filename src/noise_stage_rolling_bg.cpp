@@ -615,7 +615,17 @@ wxString RollingBackgroundStage::CurrentCameraTag()
 {
     if (!pCamera)
         return wxString();
-    return GuideCamera::HardwareIdToFileTag(pCamera->GetHardwareId());
+    wxString id = pCamera->GetHardwareId();
+    if (id.empty())
+        return wxString();
+    // Append the current capture-mode tag (e.g. pixel format) so that a
+    // YUYV-vs-MJPG or 8-bit-vs-16-bit switch on the same physical camera
+    // produces a distinct on-disk model file. Hot-pixel calibration (the
+    // BPM path, image_math.cpp) deliberately ignores the mode tag.
+    const wxString mode = pCamera->GetCurrentModeTag();
+    if (!mode.empty())
+        id += wxT("@") + mode;
+    return GuideCamera::HardwareIdToFileTag(id);
 }
 
 wxString RollingBackgroundStage::ModelFilePath(const wxString& camTag)
@@ -658,6 +668,15 @@ bool RollingBackgroundStage::SaveModelToDisk(const wxString& camTag) const
         std::strncpy(hwTmp, hwBuf.data(), sizeof(hwTmp) - 1);
         fits_write_key(fptr, TSTRING, "HWID", hwTmp,
                        "Camera hardware id", &status);
+    }
+    const wxString modeId = pCamera ? pCamera->GetCurrentModeTag() : wxString();
+    if (!modeId.empty())
+    {
+        const wxScopedCharBuffer mBuf = modeId.utf8_str();
+        char mTmp[FLEN_VALUE] = { 0 };
+        std::strncpy(mTmp, mBuf.data(), sizeof(mTmp) - 1);
+        fits_write_key(fptr, TSTRING, "MODE", mTmp,
+                       "Capture mode (e.g. pixel format)", &status);
     }
     int frameCount = m_frameCount;
     fits_write_key(fptr, TINT,   "FRAMECNT", &frameCount,
@@ -735,6 +754,21 @@ bool RollingBackgroundStage::LoadModelFromDisk(const wxString& camTag,
     const wxString camHwId  = pCamera ? pCamera->GetHardwareId() : wxString();
     if (fileHwId.empty() || camHwId.empty() || fileHwId != camHwId)
         return bail("HWID missing or mismatch");
+
+    // MODE is optional - older files won't have it. When both sides
+    // have one, they must match; otherwise pass through (filename
+    // already encodes the mode for normal lookups).
+    char modeBuf[FLEN_VALUE] = { 0 };
+    int modeStatus = 0;
+    fits_read_key(fptr, TSTRING, "MODE", modeBuf, dummy, &modeStatus);
+    if (modeStatus == 0)
+    {
+        const wxString fileMode = wxString::FromUTF8(modeBuf);
+        const wxString camMode  = pCamera ? pCamera->GetCurrentModeTag()
+                                          : wxString();
+        if (!fileMode.empty() && !camMode.empty() && fileMode != camMode)
+            return bail("MODE mismatch");
+    }
 
     int width = 0, height = 0;
     int s2 = 0;

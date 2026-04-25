@@ -843,6 +843,23 @@ elseif(UNIX)
 
   target_link_libraries(phd2 X11 ${OpenCV_LIBS})
 
+  # libjpeg (or libjpeg-turbo, ABI-compatible at the jpeg_* C API): used
+  # by the V4L2 backend to decode MJPEG frames from UVC cameras whose
+  # only practical mode at higher resolutions is MJPEG. Optional - the
+  # decoder code is guarded by HAVE_LIBJPEG, and a build without it
+  # simply zero-fills MJPEG buffers (existing behaviour).
+  find_package(JPEG QUIET)
+  if(JPEG_FOUND)
+    target_include_directories(phd2 PRIVATE ${JPEG_INCLUDE_DIRS})
+    target_link_libraries(phd2 ${JPEG_LIBRARIES})
+    target_compile_definitions(phd2 PRIVATE HAVE_LIBJPEG=1)
+    message(STATUS "libjpeg found - MJPEG decode enabled (V4L2)")
+  else()
+    message(STATUS "libjpeg not found - MJPEG decode disabled (V4L2). "
+                   "Install libjpeg-turbo8-dev (Debian/Ubuntu) or "
+                   "libjpeg-turbo-devel (Fedora) to enable.")
+  endif()
+
   # Several bundled static camera SDKs (ZWO, QHY) define identical utility
   # symbols (e.g. isLeapYear).  Allow the linker to silently use the first
   # definition it encounters rather than failing.

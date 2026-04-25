@@ -64,6 +64,105 @@
 # include <sys/select.h>
 # include <sys/stat.h>
 
+# if defined(HAVE_LIBJPEG)
+#  include <csetjmp>
+#  include <cstdio>
+extern "C" {
+#  include <jpeglib.h>
+}
+
+namespace
+{
+
+// Custom error manager so a corrupt MJPEG frame doesn't kill the
+// process via the libjpeg default error_exit (which calls exit()).
+struct JpegErrMgr
+{
+    struct jpeg_error_mgr pub;
+    std::jmp_buf          jb;
+};
+
+extern "C" void PhdJpegErrorExit(j_common_ptr cinfo)
+{
+    JpegErrMgr *err = reinterpret_cast<JpegErrMgr *>(cinfo->err);
+    char msg[JMSG_LENGTH_MAX];
+    (*cinfo->err->format_message)(cinfo, msg);
+    Debug.AddLine(wxString::Format("V4L2: libjpeg error: %s", msg));
+    std::longjmp(err->jb, 1);
+}
+
+extern "C" void PhdJpegOutputMessage(j_common_ptr) { /* swallow */ }
+
+// Decode a JPEG/MJPEG byte buffer into a contiguous 8-bit grayscale
+// buffer of width*height bytes. Returns true on success. The caller
+// guarantees outBytes has room for width*height bytes.
+//
+// V4L2's MJPEG payload is JPEG with the standard quantisation and
+// Huffman tables present in each frame (UVC class spec 1.5 mandates
+// this), so we can pass the buffer straight to libjpeg without the
+// out-of-band-table reconstruction some embedded MJPEG variants need.
+static bool DecodeMjpegToGray(const unsigned char *src, size_t srcSize,
+                              unsigned int width, unsigned int height,
+                              unsigned char *outBytes)
+{
+    struct jpeg_decompress_struct cinfo;
+    JpegErrMgr err;
+
+    cinfo.err = jpeg_std_error(&err.pub);
+    err.pub.error_exit     = PhdJpegErrorExit;
+    err.pub.output_message = PhdJpegOutputMessage;
+
+    if (setjmp(err.jb))
+    {
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, const_cast<unsigned char *>(src),
+                 (unsigned long) srcSize);
+
+    if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK)
+    {
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+    cinfo.out_color_space = JCS_GRAYSCALE;
+    cinfo.dct_method      = JDCT_IFAST;     // speed > exactness for guiding
+
+    if (!jpeg_start_decompress(&cinfo))
+    {
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+
+    // Validate decoded geometry matches what V4L2 negotiated.
+    if (cinfo.output_width != width || cinfo.output_height != height ||
+        cinfo.output_components != 1)
+    {
+        Debug.AddLine(wxString::Format(
+            "V4L2: MJPEG geometry mismatch: %ux%u/%d vs expected %ux%u",
+            cinfo.output_width, cinfo.output_height,
+            cinfo.output_components, width, height));
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+
+    while (cinfo.output_scanline < cinfo.output_height)
+    {
+        unsigned char *rows[1];
+        rows[0] = outBytes + (size_t) cinfo.output_scanline * (size_t) width;
+        jpeg_read_scanlines(&cinfo, rows, 1);
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    return true;
+}
+
+} // namespace
+# endif // HAVE_LIBJPEG
+
 // Default number of mmap capture buffers
 static const int V4L2_DEFAULT_NUM_BUFFERS = 4;
 
@@ -551,6 +650,20 @@ wxString CameraV4L2::GetHardwareId() const
     return m_hardwareId;
 }
 
+// Forward declaration - definition near end of file with the other
+// fourcc helpers.
+static wxString FourccToString(unsigned int f);
+
+wxString CameraV4L2::GetCurrentModeTag() const
+{
+    if (!Connected || m_pixelFormat == 0)
+        return wxEmptyString;
+    // FourccToString already replaces non-printable bytes with '?'; the
+    // sanitiser in the caller will then turn those into '_'. The 4-char
+    // ASCII fourcc is enough to discriminate every UVC pixel format.
+    return FourccToString(m_pixelFormat);
+}
+
 wxString CameraV4L2::ReadUsbSerial(const wxString& devicePath)
 {
     wxString nodeName = wxFileName(devicePath).GetFullName();
@@ -900,9 +1013,31 @@ void CameraV4L2::ConvertToGray16(const void *src, unsigned int srcSize,
     }
     else if (m_pixelFormat == V4L2_PIX_FMT_MJPEG)
     {
-        // TODO: decode via libjpeg-turbo
-        Debug.AddLine("V4L2: MJPEG decoding not yet implemented");
-        memset(dst, 0, npixels * sizeof(unsigned short));
+# if defined(HAVE_LIBJPEG)
+        // Decode in-place to an 8-bit grayscale scratch buffer, then
+        // upscale into the 16-bit destination. The scratch buffer lives
+        // for the duration of the call - one allocation per frame is OK
+        // since MJPEG decode dominates the cost anyway.
+        std::vector<unsigned char> gray((size_t) m_captureWidth *
+                                        (size_t) m_captureHeight);
+        if (DecodeMjpegToGray(static_cast<const unsigned char *>(src), srcSize,
+                              m_captureWidth, m_captureHeight, gray.data()))
+        {
+            const size_t n = std::min<size_t>(npixels, gray.size());
+            for (size_t i = 0; i < n; ++i)
+                dst[i] = (unsigned short) gray[i] << 8;
+            if (n < npixels)
+                std::memset(dst + n, 0, (npixels - n) * sizeof(unsigned short));
+        }
+        else
+        {
+            std::memset(dst, 0, npixels * sizeof(unsigned short));
+        }
+# else
+        Debug.AddLine("V4L2: MJPEG capture but libjpeg not available - "
+                      "rebuild with libjpeg-turbo to enable");
+        std::memset(dst, 0, npixels * sizeof(unsigned short));
+# endif
     }
     else
     {
