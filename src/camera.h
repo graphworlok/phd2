@@ -250,6 +250,29 @@ public:
     virtual wxSize GetFrameSize() const;
     virtual wxSize DarkFrameSize() { return FrameSize; }
 
+    // Stable hardware identifier for the connected camera. Used to bind
+    // calibration artifacts (dark libraries, bad-pixel maps, per-camera
+    // noise-reduction state) to a specific physical device.
+    //
+    // Format is backend-specific but should be reasonably unique per
+    // physical camera. Conventions:
+    //   "USB:VVVV:PPPP[:serial]"   - V4L2 / UVC
+    //   "ASCOM:<driver-id>"        - ASCOM
+    //   "<vendor>:<sdk-serial>"    - vendor SDKs (ZWO, QHY, ...)
+    //
+    // Used both as a FITS-header value (free-form string, length-bounded)
+    // and, after passing through HardwareIdToFileTag(), as a component of
+    // calibration filenames. Default returns empty - backend has no
+    // opinion, which makes downstream checks fall back to the existing
+    // profile/geometry-based behavior. Backwards compatible.
+    virtual wxString GetHardwareId() const { return wxEmptyString; }
+
+    // Convert a hardware id to a string safe to embed in a filename:
+    // colons, slashes, backslashes and whitespace become underscores;
+    // anything outside [A-Za-z0-9_.-] is replaced too. Empty input
+    // returns an empty wxString so the caller can detect "no id".
+    static wxString HardwareIdToFileTag(const wxString& hwId);
+
     static double GetProfilePixelSize();
 
     unsigned short GetSaturationADU() const;

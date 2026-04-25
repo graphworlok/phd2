@@ -335,6 +335,9 @@ bool usImage::Save(const wxString& fname, const wxString& hdrNote) const
         if (pCamera)
         {
             hdr.write("INSTRUME", pCamera->Name.c_str(), "Instrument name");
+            const wxString hwId = pCamera->GetHardwareId();
+            if (!hwId.empty())
+                hdr.write("HWID", hwId.c_str(), "Camera hardware identifier");
             float sz = b * pCamera->GetCameraPixelSize();
             hdr.write("XPIXSZ", sz, "pixel size in microns (with binning)");
             hdr.write("YPIXSZ", sz, "pixel size in microns (with binning)");

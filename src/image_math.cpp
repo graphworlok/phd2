@@ -1253,7 +1253,45 @@ bool DefectMap::DefectMapExists(int profileId, bool showAlert)
                 long fsize[2];
                 fits_get_img_size(fptr, 2, fsize, &status);
                 if (status == 0 && fsize[0] == sensorSize.x && fsize[1] == sensorSize.y)
+                {
                     bOk = true;
+
+                    // Tighter check: if the master dark FITS carries an
+                    // HWID keyword and the connected camera reports a
+                    // hardware id, require an exact match. Either side
+                    // missing falls through (legacy BPMs and backends
+                    // without a hardware id stay supported).
+                    const wxString camHwId = pCamera ? pCamera->GetHardwareId()
+                                                     : wxString();
+                    char fitsHwId[FLEN_VALUE] = { 0 };
+                    char dummy[FLEN_COMMENT] = { 0 };
+                    int hwStatus = 0;
+                    fits_read_key(fptr, TSTRING, "HWID", fitsHwId, dummy, &hwStatus);
+                    const wxString fileHwId =
+                        (hwStatus == 0) ? wxString::FromUTF8(fitsHwId)
+                                        : wxString();
+
+                    if (!camHwId.empty() && !fileHwId.empty() &&
+                        camHwId != fileHwId)
+                    {
+                        bOk = false;
+                        Debug.AddLine(wxString::Format(
+                            "BPM check: HWID mismatch - cam='%s', file='%s'",
+                            camHwId, fileHwId));
+                        if (showAlert)
+                            pFrame->Alert(_("Bad-pixel map was built for a different camera "
+                                            "(hardware id mismatch) - it needs to be rebuilt."));
+                    }
+                    else
+                    {
+                        Debug.AddLine(wxString::Format(
+                            "BPM check: HWID cam='%s' file='%s' (%s)",
+                            camHwId.empty() ? wxString("<none>") : camHwId,
+                            fileHwId.empty() ? wxString("<none>") : fileHwId,
+                            (camHwId.empty() || fileHwId.empty())
+                                ? "unenforced" : "match"));
+                    }
+                }
                 else
                 {
                     Debug.AddLine(

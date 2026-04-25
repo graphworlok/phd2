@@ -115,6 +115,22 @@ class CameraV4L2 : public GuideCamera
 
     std::vector<V4L2Resolution> m_resolutions; // enumerated at Connect time
 
+    // Capability info captured at Connect() time so the property dialog
+    // can present a read-only "Camera information" section without
+    // re-issuing ioctls.
+    wxString     m_capDriver;       // cap.driver         (kernel driver)
+    wxString     m_capCard;         // cap.card           (device label)
+    wxString     m_capBusInfo;      // cap.bus_info       (e.g. usb-0000:00:14.0-3)
+    unsigned int m_capVersion;      // cap.version
+    unsigned int m_capFlags;        // cap.device_caps    (V4L2_CAP_*)
+    unsigned int m_usbVendorId;     // 0 if unknown
+    unsigned int m_usbProductId;    // 0 if unknown
+    wxString     m_usbSerial;       // empty if unknown
+    wxString     m_dbCameraName;    // from uvc_cameras.xml, empty if not in db
+    wxString     m_dbSensorName;    // from uvc_cameras.xml
+    double       m_dbPixelSizeUm;   // 0 if unknown
+    std::vector<unsigned int> m_supportedFormats; // fourcc codes
+
     // Per-control availability and range (queried at Connect time)
     V4L2CtrlInfo m_ctrlExposureAuto;
     V4L2CtrlInfo m_ctrlExposureAbs;
@@ -180,6 +196,16 @@ public:
     bool EnumCameras(wxArrayString& names, wxArrayString& ids) override;
     bool GetDevicePixelSize(double *devPixelSize) override;
     void ShowPropertyDialog() override;
+    wxString GetHardwareId() const override;
+
+private:
+    // Cached at Connect() time so GetHardwareId() is callable on any
+    // thread without re-walking sysfs.
+    wxString m_hardwareId;
+
+    // Read iSerial / serial / iManufacturer-Product from sysfs walking
+    // up from the video node. Returns empty if no readable serial node.
+    static wxString ReadUsbSerial(const wxString& devicePath);
 };
 
 #endif // V4L2_CAMERA

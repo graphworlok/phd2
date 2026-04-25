@@ -42,8 +42,16 @@ class RollingBackgroundStage : public NoiseReductionStage
     int   m_warmupSamples;  // frames during which alpha decays 1 -> m_alpha
     float m_starQuantile;   // fallback bright-pixel rejection quantile
     bool  m_floorAtZero;    // clamp output to >= 0 (else apply pedestal)
+    int   m_skipInitialFrames; // discard first N frames (AGC settling)
     int   m_frameCount;     // frames observed since Reset()
     bool  m_diagnostics;    // emit per-frame NoiseDiag lines to debug log
+    bool  m_persistModel;   // write/read per-camera model to disk
+    int   m_checkpointInterval; // save every N frames (0 = save only on Reset/destruct)
+
+    // Tag of the camera that currently owns the in-memory model. When
+    // the camera changes, the model is invalidated and (if persistence
+    // is enabled) the new camera's saved model is loaded.
+    wxString m_modelTag;
 
     // Counters captured during Observe, consumed by the next Apply() call
     // so a single diagnostic line can describe both halves of one frame.
@@ -59,6 +67,15 @@ class RollingBackgroundStage : public NoiseReductionStage
     void BuildCatalogMask(const PlateSolveResult *solve,
                           std::vector<uint8_t>& mask) const;
     float HeuristicUpperThreshold(const usImage& img) const;
+
+    // Per-camera model persistence helpers. All return false silently
+    // when there is no usable hardware id - persistence is disabled in
+    // that case, no error is reported.
+    static wxString ModelFilePath(const wxString& camTag);
+    static wxString CurrentCameraTag();   // empty if no id available
+    bool LoadModelFromDisk(const wxString& camTag, const wxSize& sz);
+    bool SaveModelToDisk(const wxString& camTag) const;
+    bool DeleteModelOnDisk(const wxString& camTag) const;
 
 public:
     RollingBackgroundStage();
@@ -87,6 +104,18 @@ public:
     void  SetMaskRadius(int v)     { m_maskRadius = v; }
     int   GetMinSamples() const    { return m_minSamples; }
     void  SetMinSamples(int v)     { m_minSamples = v; }
+    int   GetSkipInitialFrames() const { return m_skipInitialFrames; }
+    void  SetSkipInitialFrames(int v)  { m_skipInitialFrames = v; }
+    bool  GetPersistModel() const  { return m_persistModel; }
+    void  SetPersistModel(bool v)  { m_persistModel = v; }
+    int   GetWarmupSamples() const { return m_warmupSamples; }
+    void  SetWarmupSamples(int v)  { m_warmupSamples = v; }
+    float GetStarQuantile() const  { return m_starQuantile; }
+    void  SetStarQuantile(float v) { m_starQuantile = v; }
+    bool  GetFloorAtZero() const   { return m_floorAtZero; }
+    void  SetFloorAtZero(bool v)   { m_floorAtZero = v; }
+    int   GetCheckpointInterval() const { return m_checkpointInterval; }
+    void  SetCheckpointInterval(int v)  { m_checkpointInterval = v; }
     bool  GetDiagnostics() const   { return m_diagnostics; }
     void  SetDiagnostics(bool v)   { m_diagnostics = v; }
 };

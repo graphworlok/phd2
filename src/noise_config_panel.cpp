@@ -89,6 +89,14 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
              "starts subtracting the model. Set to 0 to subtract from the "
              "first frame (not recommended)."));
 
+    m_skipInitial = new wxSpinCtrl(rbgBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                   wxDefaultPosition, wxDefaultSize,
+                                   wxSP_ARROW_KEYS, 0, 30, 2);
+    addRow(_("Skip initial frames:"), m_skipInitial,
+           _("Discard this many frames at startup before feeding the "
+             "background model. Lets the camera AGC settle so the model "
+             "is not poisoned by an unrepresentative first frame."));
+
     m_warmup = new wxSpinCtrl(rbgBox->GetStaticBox(), wxID_ANY, wxEmptyString,
                               wxDefaultPosition, wxDefaultSize,
                               wxSP_ARROW_KEYS, 1, 200, 16);
@@ -110,10 +118,21 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
 
     m_floorZero = new wxCheckBox(rbgBox->GetStaticBox(), wxID_ANY,
                                  _("Clamp result at zero (else apply small pedestal)"));
-    m_floorZero->SetToolTip(_("When unchecked, a pedestal of ~32 counts is added "
-                              "after subtraction to keep the median above zero "
-                              "for downstream stretches and statistics."));
+    m_floorZero->SetToolTip(_("When unchecked, the per-frame mean of the model is "
+                              "added back after subtraction so global brightness "
+                              "is preserved (true flat-field semantics)."));
     rbgBox->Add(m_floorZero, 0, wxALL, 6);
+
+    m_persistModel = new wxCheckBox(rbgBox->GetStaticBox(), wxID_ANY,
+                                    _("Persist model per camera (auto-save and reload)"));
+    m_persistModel->SetToolTip(_("When enabled, the converged background model is "
+                                 "saved under the camera's hardware id and reloaded "
+                                 "automatically on the next session, skipping warmup. "
+                                 "Stored as a multi-extension FITS file in the dark "
+                                 "library directory. Requires a backend that exposes "
+                                 "a hardware id (e.g. V4L2/UVC). Reset Model also "
+                                 "deletes the saved file."));
+    rbgBox->Add(m_persistModel, 0, wxALL, 6);
 
     m_diagnostics = new wxCheckBox(rbgBox->GetStaticBox(), wxID_ANY,
                                    _("Emit per-frame diagnostic lines to debug log"));
@@ -161,12 +180,11 @@ void NoiseConfigPanel::LoadValues()
     m_outlierSigma->SetValue(s->GetOutlierSigma());
     m_maskRadius->SetValue(s->GetMaskRadius());
     m_minSamples->SetValue(s->GetMinSamples());
-    // Warmup and star quantile don't have accessors - read from config directly
-    // to avoid adding more public methods than necessary.
-    const wxString p = wxT("/NoisePipeline/RollingBackground/");
-    m_warmup->SetValue(pConfig->Profile.GetInt(p + wxT("WarmupSamples"), 16));
-    m_starQuantile->SetValue(pConfig->Profile.GetDouble(p + wxT("StarQuantile"), 0.995));
-    m_floorZero->SetValue(pConfig->Profile.GetBoolean(p + wxT("FloorAtZero"), true));
+    m_skipInitial->SetValue(s->GetSkipInitialFrames());
+    m_warmup->SetValue(s->GetWarmupSamples());
+    m_starQuantile->SetValue(s->GetStarQuantile());
+    m_floorZero->SetValue(s->GetFloorAtZero());
+    m_persistModel->SetValue(s->GetPersistModel());
     m_diagnostics->SetValue(s->GetDiagnostics());
 
     UpdateStatus();
@@ -183,14 +201,14 @@ void NoiseConfigPanel::UnloadValues()
     s->SetOutlierSigma((float) m_outlierSigma->GetValue());
     s->SetMaskRadius(m_maskRadius->GetValue());
     s->SetMinSamples(m_minSamples->GetValue());
+    s->SetSkipInitialFrames(m_skipInitial->GetValue());
+    s->SetPersistModel(m_persistModel->GetValue());
     s->SetDiagnostics(m_diagnostics->GetValue());
+    s->SetWarmupSamples(m_warmup->GetValue());
+    s->SetStarQuantile((float) m_starQuantile->GetValue());
+    s->SetFloorAtZero(m_floorZero->GetValue());
 
-    const wxString p = wxT("/NoisePipeline/RollingBackground/");
-    pConfig->Profile.SetInt(p + wxT("WarmupSamples"), m_warmup->GetValue());
-    pConfig->Profile.SetDouble(p + wxT("StarQuantile"), m_starQuantile->GetValue());
-    pConfig->Profile.SetBoolean(p + wxT("FloorAtZero"), m_floorZero->GetValue());
-
-    // Persist the stage's own keys too.
+    // Persist via the stage so per-camera overrides are honoured.
     s->SaveConfig();
 }
 

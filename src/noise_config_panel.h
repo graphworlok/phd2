@@ -29,9 +29,11 @@ class NoiseConfigPanel : public wxPanel
     wxSpinCtrlDouble *m_outlierSigma  = nullptr;
     wxSpinCtrl       *m_maskRadius    = nullptr;
     wxSpinCtrl       *m_minSamples    = nullptr;
+    wxSpinCtrl       *m_skipInitial   = nullptr;
     wxSpinCtrl       *m_warmup        = nullptr;
     wxSpinCtrlDouble *m_starQuantile  = nullptr;
     wxCheckBox       *m_floorZero     = nullptr;
+    wxCheckBox       *m_persistModel  = nullptr;
     wxCheckBox       *m_diagnostics   = nullptr;
     wxButton         *m_resetBtn      = nullptr;
     wxStaticText     *m_status        = nullptr;

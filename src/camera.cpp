@@ -241,6 +241,25 @@ GuideCamera::~GuideCamera()
     ClearDefectMap();
 }
 
+wxString GuideCamera::HardwareIdToFileTag(const wxString& hwId)
+{
+    if (hwId.empty())
+        return wxEmptyString;
+
+    wxString out;
+    out.reserve(hwId.length());
+    for (size_t i = 0; i < hwId.length(); ++i)
+    {
+        const wxChar c = hwId[i];
+        const bool ok = (c >= '0' && c <= '9') ||
+                        (c >= 'A' && c <= 'Z') ||
+                        (c >= 'a' && c <= 'z') ||
+                        c == '_' || c == '.' || c == '-';
+        out += ok ? c : wxChar('_');
+    }
+    return out;
+}
+
 static int CompareNoCase(const wxString& first, const wxString& second)
 {
     return first.CmpNoCase(second);

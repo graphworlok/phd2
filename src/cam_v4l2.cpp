@@ -204,7 +204,12 @@ CameraV4L2::CameraV4L2()
     : m_fd(-1),
       m_pixelFormat(0),
       m_captureWidth(0),
-      m_captureHeight(0)
+      m_captureHeight(0),
+      m_capVersion(0),
+      m_capFlags(0),
+      m_usbVendorId(0),
+      m_usbProductId(0),
+      m_dbPixelSizeUm(0.0)
 {
     Connected = false;
     Name = _T("V4L2 Camera");
@@ -341,11 +346,22 @@ bool CameraV4L2::Connect(const wxString& camId)
         return true;
     }
 
+    // Cache capability strings so the property dialog can show them
+    // without re-querying.
+    m_capDriver  = wxString::FromAscii((const char *) cap.driver);
+    m_capCard    = wxString::FromAscii((const char *) cap.card);
+    m_capBusInfo = wxString::FromAscii((const char *) cap.bus_info);
+    m_capVersion = cap.version;
+    m_capFlags   = cap.device_caps;
+
     // Resolve USB IDs, look up the camera database, then load config.
     // Database lookup happens first so name/sensor are available to the
     // config loader for [name:...] and [sensor:...] section matching.
     unsigned int vid = 0, pid = 0;
     GetUsbIds(devPath, &vid, &pid);
+    m_usbVendorId  = vid;
+    m_usbProductId = pid;
+    m_usbSerial    = ReadUsbSerial(devPath);
 
     wxString dbCameraName, dbSensorName;
     {
@@ -358,13 +374,32 @@ bool CameraV4L2::Connect(const wxString& camId)
                 dbCameraName = info.name;
                 dbSensorName = info.sensor;
                 Name = info.name;
+                m_dbCameraName  = info.name;
+                m_dbSensorName  = info.sensor;
+                m_dbPixelSizeUm = info.pixelSizeUm;
                 if (info.pixelSizeUm > 0.0)
                     SetCameraPixelSize(info.pixelSizeUm);
                 Debug.AddLine(wxString::Format(
                     "V4L2: matched USB %04x:%04x => %s, sensor=%s, pixel=%.2f um",
                     vid, pid, info.name, info.sensor, info.pixelSizeUm));
             }
+            else
+            {
+                m_dbPixelSizeUm = 0.0;
+            }
         }
+    }
+
+    // Enumerate every pixel format the device claims to support so the
+    // info dialog can show which formats are available (vs the one PHD2
+    // actually selected).
+    m_supportedFormats.clear();
+    {
+        struct v4l2_fmtdesc fmtd;
+        memset(&fmtd, 0, sizeof(fmtd));
+        fmtd.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        for (fmtd.index = 0; xioctl(m_fd, VIDIOC_ENUM_FMT, &fmtd) == 0; fmtd.index++)
+            m_supportedFormats.push_back(fmtd.pixelformat);
     }
 
     LoadUvcConfig(vid, pid, dbCameraName, dbSensorName, &m_config);
@@ -488,8 +523,65 @@ bool CameraV4L2::Connect(const wxString& camId)
 
     FrameSize = wxSize(m_captureWidth, m_captureHeight);
     m_devicePath = devPath;
+
+    // Build a stable hardware id so the dark library / BPM / per-camera
+    // calibration files can verify they belong to this physical device.
+    // Format: "USB:VVVV:PPPP" or "USB:VVVV:PPPP:<serial>" if a serial
+    // string is exposed by the kernel for this USB device.
+    {
+        wxString hwId;
+        if (m_usbVendorId != 0 || m_usbProductId != 0)
+        {
+            hwId = wxString::Format("USB:%04x:%04x",
+                                    m_usbVendorId, m_usbProductId);
+            if (!m_usbSerial.empty())
+                hwId += wxT(":") + m_usbSerial;
+        }
+        m_hardwareId = hwId;
+        Debug.AddLine(wxString::Format("V4L2: hardware id = '%s'",
+            m_hardwareId.empty() ? wxString("<none>") : m_hardwareId));
+    }
+
     Connected = true;
     return false;
+}
+
+wxString CameraV4L2::GetHardwareId() const
+{
+    return m_hardwareId;
+}
+
+wxString CameraV4L2::ReadUsbSerial(const wxString& devicePath)
+{
+    wxString nodeName = wxFileName(devicePath).GetFullName();
+    wxString sysBase  = "/sys/class/video4linux/" + nodeName + "/device";
+
+    // Walk up to the USB device directory looking for a "serial" attr.
+    for (int depth = 0; depth < 6; depth++)
+    {
+        wxString f = sysBase + "/serial";
+        if (wxFileExists(f))
+        {
+            wxString s;
+            if (wxFile(f).ReadAll(&s))
+            {
+                s.Trim(true).Trim(false);
+                // Strip whitespace and unprintable chars; some devices
+                // pad with NULs.
+                wxString clean;
+                for (size_t i = 0; i < s.length(); ++i)
+                {
+                    wxChar c = s[i];
+                    if (c >= 0x20 && c < 0x7f)
+                        clean += c;
+                }
+                return clean;
+            }
+            break;
+        }
+        sysBase += "/..";
+    }
+    return wxEmptyString;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +593,19 @@ bool CameraV4L2::Disconnect()
     StopStreaming();
     UninitMmap();
     CloseDevice();
+    m_hardwareId.clear();
+    m_capDriver.clear();
+    m_capCard.clear();
+    m_capBusInfo.clear();
+    m_capVersion = 0;
+    m_capFlags = 0;
+    m_usbVendorId = 0;
+    m_usbProductId = 0;
+    m_usbSerial.clear();
+    m_dbCameraName.clear();
+    m_dbSensorName.clear();
+    m_dbPixelSizeUm = 0.0;
+    m_supportedFormats.clear();
     Connected = false;
     return false;
 }
@@ -1343,6 +1448,48 @@ public:
     void ApplySettings();
 };
 
+// Render a human-readable description of V4L2_CAP_* flags.
+static wxString FormatCapFlags(unsigned int f)
+{
+    struct { unsigned int bit; const char *name; } table[] = {
+        { V4L2_CAP_VIDEO_CAPTURE,        "VIDEO_CAPTURE" },
+        { V4L2_CAP_VIDEO_OUTPUT,         "VIDEO_OUTPUT" },
+        { V4L2_CAP_VIDEO_OVERLAY,        "VIDEO_OVERLAY" },
+        { V4L2_CAP_STREAMING,            "STREAMING" },
+        { V4L2_CAP_READWRITE,            "READWRITE" },
+        { V4L2_CAP_EXT_PIX_FORMAT,       "EXT_PIX_FORMAT" },
+        { V4L2_CAP_VIDEO_CAPTURE_MPLANE, "VIDEO_CAPTURE_MPLANE" },
+        { V4L2_CAP_DEVICE_CAPS,          "DEVICE_CAPS" },
+        { V4L2_CAP_TUNER,                "TUNER" },
+        { V4L2_CAP_AUDIO,                "AUDIO" },
+        { V4L2_CAP_RDS_CAPTURE,          "RDS_CAPTURE" },
+        { V4L2_CAP_TIMEPERFRAME,         "TIMEPERFRAME" },
+    };
+    wxString out;
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+        if (f & table[i].bit)
+        {
+            if (!out.empty()) out += " | ";
+            out += table[i].name;
+        }
+    return out.empty() ? wxString("-") : out;
+}
+
+// Render fourcc as ASCII, e.g. 0x56595559 -> "YUYV"
+static wxString FourccToString(unsigned int f)
+{
+    char s[5] = {
+        (char) ((f >>  0) & 0xff),
+        (char) ((f >>  8) & 0xff),
+        (char) ((f >> 16) & 0xff),
+        (char) ((f >> 24) & 0xff),
+        0,
+    };
+    for (int i = 0; i < 4; i++)
+        if (s[i] < 0x20 || s[i] >= 0x7f) s[i] = '?';
+    return wxString::FromAscii(s);
+}
+
 V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
     : wxDialog(parent, wxID_ANY, _("V4L2 Camera Properties")),
       m_cam(cam),
@@ -1353,6 +1500,94 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
       m_gamma(nullptr)
 {
     wxBoxSizer *top = new wxBoxSizer(wxVERTICAL);
+
+    // -----------------------------------------------------------------
+    // Camera information (read-only)
+    // -----------------------------------------------------------------
+    {
+        wxStaticBoxSizer *infoBox =
+            new wxStaticBoxSizer(wxVERTICAL, this, _("Camera information"));
+        wxFlexGridSizer *ig = new wxFlexGridSizer(2, 4, 8);
+        ig->AddGrowableCol(1, 1);
+
+        auto addInfoRow = [&](const wxString& label, const wxString& value)
+        {
+            wxStaticText *l = new wxStaticText(infoBox->GetStaticBox(),
+                                               wxID_ANY, label);
+            wxStaticText *v = new wxStaticText(infoBox->GetStaticBox(),
+                                               wxID_ANY,
+                                               value.empty() ? wxString("-") : value);
+            wxFont vf = v->GetFont();
+            vf.SetFamily(wxFONTFAMILY_TELETYPE);
+            v->SetFont(vf);
+            ig->Add(l, 0, wxALIGN_CENTER_VERTICAL);
+            ig->Add(v, 0, wxEXPAND);
+        };
+
+        addInfoRow(_("Device path:"),  cam->m_devicePath);
+        addInfoRow(_("Driver:"),
+                   wxString::Format("%s (kernel %u.%u.%u)",
+                       cam->m_capDriver,
+                       (cam->m_capVersion >> 16) & 0xff,
+                       (cam->m_capVersion >>  8) & 0xff,
+                        cam->m_capVersion        & 0xff));
+        addInfoRow(_("Card:"),         cam->m_capCard);
+        addInfoRow(_("Bus:"),          cam->m_capBusInfo);
+
+        if (cam->m_usbVendorId || cam->m_usbProductId)
+        {
+            addInfoRow(_("USB ID:"),
+                       wxString::Format("%04x:%04x",
+                           cam->m_usbVendorId, cam->m_usbProductId));
+        }
+        addInfoRow(_("USB serial:"),   cam->m_usbSerial);
+        addInfoRow(_("Hardware id:"),  cam->m_hardwareId);
+
+        if (!cam->m_dbCameraName.empty())
+            addInfoRow(_("Database name:"), cam->m_dbCameraName);
+        if (!cam->m_dbSensorName.empty())
+            addInfoRow(_("Sensor:"),        cam->m_dbSensorName);
+        if (cam->m_dbPixelSizeUm > 0.0)
+            addInfoRow(_("Pixel size:"),
+                       wxString::Format("%.2f um", cam->m_dbPixelSizeUm));
+
+        addInfoRow(_("Capabilities:"), FormatCapFlags(cam->m_capFlags));
+
+        // Active format / size.
+        addInfoRow(_("Active format:"),
+                   wxString::Format("%s  %u x %u",
+                       FourccToString(cam->m_pixelFormat),
+                       cam->m_captureWidth, cam->m_captureHeight));
+
+        // Supported pixel formats.
+        wxString fmts;
+        for (size_t i = 0; i < cam->m_supportedFormats.size(); i++)
+        {
+            if (!fmts.empty()) fmts += ", ";
+            fmts += FourccToString(cam->m_supportedFormats[i]);
+        }
+        addInfoRow(_("Supported formats:"), fmts);
+
+        // Available controls and their ranges.
+        auto ctrlRange = [](const V4L2CtrlInfo& c) -> wxString
+        {
+            if (!c.available) return _("not supported");
+            return wxString::Format("range %d..%d (step %d, default %d)",
+                                    c.minimum, c.maximum, c.step, c.def);
+        };
+        addInfoRow(_("Exposure auto:"), ctrlRange(cam->m_ctrlExposureAuto));
+        addInfoRow(_("Exposure abs:"),  ctrlRange(cam->m_ctrlExposureAbs));
+        addInfoRow(_("Gain:"),          ctrlRange(cam->m_ctrlGain));
+        addInfoRow(_("Brightness:"),    ctrlRange(cam->m_ctrlBrightness));
+        addInfoRow(_("Contrast:"),      ctrlRange(cam->m_ctrlContrast));
+        addInfoRow(_("Gamma:"),         ctrlRange(cam->m_ctrlGamma));
+
+        infoBox->Add(ig, wxSizerFlags(1).Expand().Border(wxALL, 6));
+        top->Add(infoBox, wxSizerFlags().Expand().Border(wxALL, 8));
+    }
+
+    wxStaticBoxSizer *adjBox =
+        new wxStaticBoxSizer(wxVERTICAL, this, _("Adjustable settings"));
 
     wxFlexGridSizer *grid = new wxFlexGridSizer(2, 0, 0);
     grid->AddGrowableCol(1, 1);
@@ -1424,7 +1659,7 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
     m_gamma      = AddSpinRow(this, grid, _("Gamma:"),
                               cam->m_ctrlGamma,      curGamma);
 
-    top->Add(grid, wxSizerFlags(1).Expand().Border(wxALL, 8));
+    adjBox->Add(grid, wxSizerFlags(1).Expand().Border(wxALL, 4));
 
     if (cam->m_resolutions.empty()         &&
         !cam->m_ctrlExposureAuto.available &&
@@ -1432,10 +1667,12 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
         !cam->m_ctrlContrast.available     &&
         !cam->m_ctrlGamma.available)
     {
-        top->Add(new wxStaticText(this, wxID_ANY,
-                 _("No adjustable controls found on this device.")),
-                 wxSizerFlags().Border(wxALL, 8));
+        adjBox->Add(new wxStaticText(adjBox->GetStaticBox(), wxID_ANY,
+                    _("No adjustable controls found on this device.")),
+                    wxSizerFlags().Border(wxALL, 6));
     }
+
+    top->Add(adjBox, wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM, 8));
 
     wxBoxSizer *btnRow = new wxBoxSizer(wxHORIZONTAL);
     wxButton *resetBtn = new wxButton(this, wxID_ANY, _("Reset to Defaults"));

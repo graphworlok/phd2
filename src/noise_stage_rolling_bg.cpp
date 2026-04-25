@@ -8,6 +8,7 @@
 #include "phd.h"
 #include "noise_stage_rolling_bg.h"
 #include "astrometry_solver.h"
+#include "camera.h"
 
 #include <algorithm>
 #include <climits>
@@ -26,8 +27,11 @@ RollingBackgroundStage::RollingBackgroundStage()
       m_warmupSamples(16),
       m_starQuantile(0.995f),
       m_floorAtZero(true),
+      m_skipInitialFrames(2),
       m_frameCount(0),
       m_diagnostics(false),
+      m_persistModel(false),
+      m_checkpointInterval(256),
       m_diagMaskedCat(0),
       m_diagMaskedQuantile(0),
       m_diagOutliers(0),
@@ -39,32 +43,97 @@ RollingBackgroundStage::RollingBackgroundStage()
     m_enabled = false; // opt-in
 }
 
+// Layered config helpers: read profile-scoped key first as the fallback
+// default, then let a per-camera key override it. SaveConfig writes
+// both, so the profile copy stays useful as the default for a future
+// session where the camera id is not available (or for an unidentified
+// camera in the same profile).
+namespace
+{
+
+wxString PerCameraPrefix()
+{
+    if (!pCamera)
+        return wxString();
+    const wxString tag = GuideCamera::HardwareIdToFileTag(pCamera->GetHardwareId());
+    if (tag.empty())
+        return wxString();
+    return wxT("/NoisePipeline/Cameras/") + tag + wxT("/RollingBackground/");
+}
+
+} // namespace
+
 void RollingBackgroundStage::LoadConfig()
 {
-    const wxString p = wxT("/NoisePipeline/RollingBackground/");
-    m_enabled       = pConfig->Profile.GetBoolean(p + wxT("Enabled"), false);
-    m_alpha         = (float) pConfig->Profile.GetDouble(p + wxT("Alpha"), m_alpha);
-    m_outlierSigma  = (float) pConfig->Profile.GetDouble(p + wxT("OutlierSigma"), m_outlierSigma);
-    m_maskRadius    = pConfig->Profile.GetInt(p + wxT("MaskRadius"), m_maskRadius);
-    m_minSamples    = pConfig->Profile.GetInt(p + wxT("MinSamples"), m_minSamples);
-    m_warmupSamples = pConfig->Profile.GetInt(p + wxT("WarmupSamples"), m_warmupSamples);
-    m_starQuantile  = (float) pConfig->Profile.GetDouble(p + wxT("StarQuantile"), m_starQuantile);
-    m_floorAtZero   = pConfig->Profile.GetBoolean(p + wxT("FloorAtZero"), m_floorAtZero);
-    m_diagnostics   = pConfig->Profile.GetBoolean(p + wxT("Diagnostics"), false);
+    const wxString pp = wxT("/NoisePipeline/RollingBackground/");
+    const wxString cp = PerCameraPrefix();
+
+    auto loadBool = [&](const wxString& key, bool def) -> bool {
+        bool v = pConfig->Profile.GetBoolean(pp + key, def);
+        if (!cp.empty())
+            v = pConfig->Profile.GetBoolean(cp + key, v);
+        return v;
+    };
+    auto loadInt = [&](const wxString& key, int def) -> int {
+        int v = pConfig->Profile.GetInt(pp + key, def);
+        if (!cp.empty())
+            v = pConfig->Profile.GetInt(cp + key, v);
+        return v;
+    };
+    auto loadDbl = [&](const wxString& key, double def) -> double {
+        double v = pConfig->Profile.GetDouble(pp + key, def);
+        if (!cp.empty())
+            v = pConfig->Profile.GetDouble(cp + key, v);
+        return v;
+    };
+
+    m_enabled            = loadBool(wxT("Enabled"),            false);
+    m_alpha              = (float) loadDbl(wxT("Alpha"),       m_alpha);
+    m_outlierSigma       = (float) loadDbl(wxT("OutlierSigma"),m_outlierSigma);
+    m_maskRadius         = loadInt(wxT("MaskRadius"),          m_maskRadius);
+    m_minSamples         = loadInt(wxT("MinSamples"),          m_minSamples);
+    m_warmupSamples      = loadInt(wxT("WarmupSamples"),       m_warmupSamples);
+    m_starQuantile       = (float) loadDbl(wxT("StarQuantile"),m_starQuantile);
+    m_floorAtZero        = loadBool(wxT("FloorAtZero"),        m_floorAtZero);
+    m_skipInitialFrames  = loadInt(wxT("SkipInitialFrames"),   m_skipInitialFrames);
+    m_persistModel       = loadBool(wxT("PersistModel"),       false);
+    m_checkpointInterval = loadInt(wxT("CheckpointInterval"),  m_checkpointInterval);
+    m_diagnostics        = loadBool(wxT("Diagnostics"),        false);
 }
 
 void RollingBackgroundStage::SaveConfig()
 {
-    const wxString p = wxT("/NoisePipeline/RollingBackground/");
-    pConfig->Profile.SetBoolean(p + wxT("Enabled"), m_enabled);
-    pConfig->Profile.SetDouble(p + wxT("Alpha"), m_alpha);
-    pConfig->Profile.SetDouble(p + wxT("OutlierSigma"), m_outlierSigma);
-    pConfig->Profile.SetInt(p + wxT("MaskRadius"), m_maskRadius);
-    pConfig->Profile.SetInt(p + wxT("MinSamples"), m_minSamples);
-    pConfig->Profile.SetInt(p + wxT("WarmupSamples"), m_warmupSamples);
-    pConfig->Profile.SetDouble(p + wxT("StarQuantile"), m_starQuantile);
-    pConfig->Profile.SetBoolean(p + wxT("FloorAtZero"), m_floorAtZero);
-    pConfig->Profile.SetBoolean(p + wxT("Diagnostics"), m_diagnostics);
+    const wxString pp = wxT("/NoisePipeline/RollingBackground/");
+    const wxString cp = PerCameraPrefix();
+
+    auto saveBool = [&](const wxString& key, bool v) {
+        pConfig->Profile.SetBoolean(pp + key, v);
+        if (!cp.empty())
+            pConfig->Profile.SetBoolean(cp + key, v);
+    };
+    auto saveInt = [&](const wxString& key, int v) {
+        pConfig->Profile.SetInt(pp + key, v);
+        if (!cp.empty())
+            pConfig->Profile.SetInt(cp + key, v);
+    };
+    auto saveDbl = [&](const wxString& key, double v) {
+        pConfig->Profile.SetDouble(pp + key, v);
+        if (!cp.empty())
+            pConfig->Profile.SetDouble(cp + key, v);
+    };
+
+    saveBool(wxT("Enabled"),            m_enabled);
+    saveDbl (wxT("Alpha"),               m_alpha);
+    saveDbl (wxT("OutlierSigma"),        m_outlierSigma);
+    saveInt (wxT("MaskRadius"),          m_maskRadius);
+    saveInt (wxT("MinSamples"),          m_minSamples);
+    saveInt (wxT("WarmupSamples"),       m_warmupSamples);
+    saveDbl (wxT("StarQuantile"),        m_starQuantile);
+    saveBool(wxT("FloorAtZero"),         m_floorAtZero);
+    saveInt (wxT("SkipInitialFrames"),   m_skipInitialFrames);
+    saveBool(wxT("PersistModel"),        m_persistModel);
+    saveInt (wxT("CheckpointInterval"),  m_checkpointInterval);
+    saveBool(wxT("Diagnostics"),         m_diagnostics);
 }
 
 void RollingBackgroundStage::Reset()
@@ -73,6 +142,15 @@ void RollingBackgroundStage::Reset()
     std::fill(m_mean2.begin(), m_mean2.end(), 0.0f);
     std::fill(m_samples.begin(), m_samples.end(), (uint16_t) 0);
     m_frameCount = 0;
+
+    // If a per-camera model file exists for this camera, drop it so the
+    // user-visible "Reset" really starts fresh.
+    if (m_persistModel)
+    {
+        const wxString tag = CurrentCameraTag();
+        if (!tag.empty())
+            DeleteModelOnDisk(tag);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -81,16 +159,34 @@ void RollingBackgroundStage::Reset()
 
 void RollingBackgroundStage::Allocate(const wxSize& sz)
 {
-    if (sz == m_size && !m_mean.empty())
+    const wxString currentTag = CurrentCameraTag();
+
+    // No-op if both the geometry AND the camera identity match what we
+    // already have - the in-memory model is still valid.
+    if (sz == m_size && !m_mean.empty() && currentTag == m_modelTag)
         return;
 
-    // Sensor geometry changed (e.g. user changed resolution). Drop state.
+    // Sensor geometry or camera changed. Drop state.
     m_size = sz;
+    m_modelTag = currentTag;
     const size_t n = (size_t) sz.GetWidth() * (size_t) sz.GetHeight();
     m_mean.assign(n, 0.0f);
     m_mean2.assign(n, 0.0f);
     m_samples.assign(n, (uint16_t) 0);
     m_frameCount = 0;
+
+    // Try to load a saved model for this camera. Silently skips if
+    // persistence is off, no hardware id is available, or the file
+    // doesn't exist / fails validation.
+    if (m_persistModel && !currentTag.empty())
+    {
+        if (LoadModelFromDisk(currentTag, sz))
+        {
+            Debug.Write(wxString::Format(
+                "RollingBackground: loaded saved model for camera %s, %d frames\n",
+                currentTag, m_frameCount));
+        }
+    }
 }
 
 void RollingBackgroundStage::BuildCatalogMask(const PlateSolveResult *solve,
@@ -331,12 +427,17 @@ bool RollingBackgroundStage::Apply(usImage& img, const PlateSolveResult * /*solv
     }
     else
     {
-        // Small pedestal keeps the median above zero so downstream
-        // statistics and display stretches behave naturally.
-        constexpr float PEDESTAL = 32.0f;
+        // Flat-field semantics: subtract the spatial model but add back
+        // its scalar mean so global brightness is preserved. This flattens
+        // vignetting, amp glow and FPN without darkening the frame.
+        double sum = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            sum += (double) bg[i];
+        const float pedestal = (float) (sum / (double) n);
+
         for (size_t i = 0; i < n; ++i)
         {
-            const float v = (float) pix[i] - bg[i] + PEDESTAL;
+            const float v = (float) pix[i] - bg[i] + pedestal;
             if (v <= 0.0f) { pix[i] = 0; ++clamped; }
             else if (v >= 65535.0f) pix[i] = 65535;
             else pix[i] = (unsigned short) v;
@@ -382,10 +483,26 @@ void RollingBackgroundStage::Observe(const usImage& img, const PlateSolveResult 
 
     Allocate(img.Size);
 
+    // Discard the leading frames so the camera AGC has time to settle.
+    // Without this, frame 0 (often far from the steady-state mean) is
+    // accepted at warmup alpha = 1.0 and poisons the entire model.
+    if (m_frameCount < m_skipInitialFrames)
+    {
+        m_diagMaskedCat = m_diagMaskedQuantile = m_diagOutliers = m_diagUsed = 0;
+        m_diagAlpha = 0.0f;
+        m_diagUpperThresh = 0.0f;
+        m_diagHaveCatalog = false;
+        ++m_frameCount;
+        return;
+    }
+
     // During warmup: larger effective alpha so the model converges quickly
     // (1 / (n+1) gives perfect arithmetic mean for the first few frames).
+    // Index relative to the first *accepted* frame so the leading skipped
+    // frames do not eat into the warmup budget.
+    const int observedIdx = m_frameCount - m_skipInitialFrames;
     const float a_steady = m_alpha;
-    const float a_warm   = 1.0f / (float) std::max(1, std::min(m_frameCount + 1, m_warmupSamples));
+    const float a_warm   = 1.0f / (float) std::max(1, std::min(observedIdx + 1, m_warmupSamples));
     const float alpha    = std::max(a_steady, a_warm);
 
     std::vector<uint8_t> starMask;
@@ -452,6 +569,19 @@ void RollingBackgroundStage::Observe(const usImage& img, const PlateSolveResult 
     m_diagHaveCatalog    = haveCatalog;
 
     ++m_frameCount;
+
+    // Periodic checkpoint to disk so the converged model survives a
+    // restart. Capped to once every CheckpointInterval frames; a value
+    // of zero disables periodic saves (Reset and explicit calls still
+    // work).
+    if (m_persistModel && m_checkpointInterval > 0 &&
+        m_frameCount > m_minSamples &&
+        (m_frameCount % m_checkpointInterval) == 0)
+    {
+        const wxString tag = m_modelTag;
+        if (!tag.empty())
+            SaveModelToDisk(tag);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -467,4 +597,199 @@ int RollingBackgroundStage::MinSamples() const
         if (v < m)
             m = v;
     return (int) m;
+}
+
+// ---------------------------------------------------------------------------
+// Per-camera model persistence
+//
+// File layout: a multi-extension FITS at
+//   GetDarksDir() / "PHD2_noise_rbg_<camTag>.fit"
+// containing four HDUs:
+//   1. Primary (0x0)         - metadata only: HWID, FRAMECNT, ALPHA, etc.
+//   2. MEAN    image float32 - per-pixel running mean
+//   3. MEAN2   image float32 - per-pixel running mean of value^2
+//   4. SAMPLES image uint16  - per-pixel observation count
+// ---------------------------------------------------------------------------
+
+wxString RollingBackgroundStage::CurrentCameraTag()
+{
+    if (!pCamera)
+        return wxString();
+    return GuideCamera::HardwareIdToFileTag(pCamera->GetHardwareId());
+}
+
+wxString RollingBackgroundStage::ModelFilePath(const wxString& camTag)
+{
+    if (camTag.empty())
+        return wxString();
+    return MyFrame::GetDarksDir() + PATHSEPSTR +
+           wxT("PHD2_noise_rbg_") + camTag + wxT(".fit");
+}
+
+bool RollingBackgroundStage::SaveModelToDisk(const wxString& camTag) const
+{
+    if (camTag.empty() || m_size.GetWidth() == 0 || m_mean.empty())
+        return false;
+
+    const wxString path = ModelFilePath(camTag);
+    if (path.empty())
+        return false;
+
+    fitsfile *fptr = nullptr;
+    int status = 0;
+    PHD_fits_create_file(&fptr, path, true, &status);
+    if (status)
+    {
+        Debug.Write(wxString::Format(
+            "RollingBackground: SaveModel - cannot create %s, status=%d\n",
+            path, status));
+        return false;
+    }
+
+    // Primary HDU: empty placeholder carrying metadata.
+    long primAxes[1] = { 0 };
+    fits_create_img(fptr, BYTE_IMG, 0, primAxes, &status);
+
+    const wxString hwId = pCamera ? pCamera->GetHardwareId() : wxString();
+    {
+        // fits_write_key(TSTRING) wants a non-const char*; copy first.
+        const wxScopedCharBuffer hwBuf = hwId.utf8_str();
+        char hwTmp[FLEN_VALUE] = { 0 };
+        std::strncpy(hwTmp, hwBuf.data(), sizeof(hwTmp) - 1);
+        fits_write_key(fptr, TSTRING, "HWID", hwTmp,
+                       "Camera hardware id", &status);
+    }
+    int frameCount = m_frameCount;
+    fits_write_key(fptr, TINT,   "FRAMECNT", &frameCount,
+                   "Frames observed",      &status);
+    float alpha = m_alpha;
+    fits_write_key(fptr, TFLOAT, "ALPHA",    &alpha,
+                   "Steady-state EMA alpha at save time", &status);
+    int width  = m_size.GetWidth();
+    int height = m_size.GetHeight();
+    fits_write_key(fptr, TINT, "MODELW", &width,  "Model width (px)",  &status);
+    fits_write_key(fptr, TINT, "MODELH", &height, "Model height (px)", &status);
+
+    long axes[2] = { (long) width, (long) height };
+    long fpixel[2] = { 1, 1 };
+    long npix = (long) width * (long) height;
+
+    auto writeImage = [&](int bitpix, int dtype, void *data, const char *name)
+    {
+        fits_create_img(fptr, bitpix, 2, axes, &status);
+        char extName[FLEN_VALUE] = { 0 };
+        std::strncpy(extName, name, sizeof(extName) - 1);
+        fits_write_key(fptr, TSTRING, "EXTNAME", extName, 0, &status);
+        fits_write_pix(fptr, dtype, fpixel, npix, data, &status);
+    };
+
+    writeImage(FLOAT_IMG,  TFLOAT,  (void *) m_mean.data(),    "MEAN");
+    writeImage(FLOAT_IMG,  TFLOAT,  (void *) m_mean2.data(),   "MEAN2");
+    writeImage(USHORT_IMG, TUSHORT, (void *) m_samples.data(), "SAMPLES");
+
+    PHD_fits_close_file(fptr);
+
+    if (status)
+    {
+        Debug.Write(wxString::Format(
+            "RollingBackground: SaveModel - fitsio status=%d for %s\n",
+            status, path));
+        return false;
+    }
+    Debug.Write(wxString::Format(
+        "RollingBackground: saved model %dx%d (%d frames) to %s\n",
+        width, height, m_frameCount, path));
+    return true;
+}
+
+bool RollingBackgroundStage::LoadModelFromDisk(const wxString& camTag,
+                                               const wxSize& sz)
+{
+    if (camTag.empty())
+        return false;
+    const wxString path = ModelFilePath(camTag);
+    if (path.empty() || !wxFileExists(path))
+        return false;
+
+    fitsfile *fptr = nullptr;
+    int status = 0;
+    if (PHD_fits_open_diskfile(&fptr, path, READONLY, &status) || status)
+        return false;
+
+    auto bail = [&](const wxString& reason) -> bool {
+        Debug.Write(wxString::Format(
+            "RollingBackground: LoadModel - rejecting %s (%s)\n",
+            path, reason));
+        int s = 0;
+        if (fptr) PHD_fits_close_file(fptr);
+        return false;
+    };
+
+    // Validate metadata in primary HDU.
+    char hwId[FLEN_VALUE] = { 0 };
+    char dummy[FLEN_COMMENT] = { 0 };
+    int hwStatus = 0;
+    fits_read_key(fptr, TSTRING, "HWID", hwId, dummy, &hwStatus);
+    const wxString fileHwId = (hwStatus == 0) ? wxString::FromUTF8(hwId)
+                                              : wxString();
+    const wxString camHwId  = pCamera ? pCamera->GetHardwareId() : wxString();
+    if (fileHwId.empty() || camHwId.empty() || fileHwId != camHwId)
+        return bail("HWID missing or mismatch");
+
+    int width = 0, height = 0;
+    int s2 = 0;
+    fits_read_key(fptr, TINT, "MODELW", &width,  dummy, &s2);
+    int s3 = 0;
+    fits_read_key(fptr, TINT, "MODELH", &height, dummy, &s3);
+    if (s2 || s3 || width != sz.GetWidth() || height != sz.GetHeight())
+        return bail("dimension mismatch");
+
+    int frameCount = 0;
+    int sFc = 0;
+    fits_read_key(fptr, TINT, "FRAMECNT", &frameCount, dummy, &sFc);
+    if (sFc) frameCount = 0;
+
+    const long npix = (long) width * (long) height;
+    long fpixel[2] = { 1, 1 };
+
+    // The three image extensions are written in order MEAN, MEAN2, SAMPLES.
+    // movabs_hdu uses 1-based indexing (1=primary).
+    auto readExt = [&](int hduIdx, int dtype, void *dst) -> bool {
+        int s = 0;
+        fits_movabs_hdu(fptr, hduIdx, nullptr, &s);
+        if (s) return false;
+        fits_read_pix(fptr, dtype, fpixel, npix, nullptr, dst, nullptr, &s);
+        return s == 0;
+    };
+
+    std::vector<float>    newMean (npix, 0.0f);
+    std::vector<float>    newMean2(npix, 0.0f);
+    std::vector<uint16_t> newSmpl (npix, 0);
+
+    if (!readExt(2, TFLOAT,  newMean.data()) ||
+        !readExt(3, TFLOAT,  newMean2.data()) ||
+        !readExt(4, TUSHORT, newSmpl.data()))
+        return bail("read failure");
+
+    PHD_fits_close_file(fptr);
+
+    m_mean    = std::move(newMean);
+    m_mean2   = std::move(newMean2);
+    m_samples = std::move(newSmpl);
+    m_frameCount = frameCount;
+    return true;
+}
+
+bool RollingBackgroundStage::DeleteModelOnDisk(const wxString& camTag) const
+{
+    if (camTag.empty())
+        return false;
+    const wxString path = ModelFilePath(camTag);
+    if (path.empty() || !wxFileExists(path))
+        return false;
+    bool ok = wxRemoveFile(path);
+    Debug.Write(wxString::Format(
+        "RollingBackground: %s saved model at %s\n",
+        ok ? "deleted" : "failed to delete", path));
+    return ok;
 }
