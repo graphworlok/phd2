@@ -39,6 +39,7 @@
 #include "camera.h"
 #include "gear_simulator.h"
 #include "noise_pipeline.h"
+#include "noise_pipeline_tap.h"
 #include "sensor_db.h"
 
 #include <wx/stdpaths.h>
@@ -1577,7 +1578,29 @@ void GuideCamera::SubtractDark(usImage& img)
     // correction so its rolling background model ingests frames that have
     // already had any static calibration applied.
     if (pNoise)
-        pNoise->Process(img, nullptr);
+    {
+        if (NoisePipelineTap::IsActive())
+        {
+            // Snapshot the post-dark/post-defect frame *before* the
+            // pipeline modifies it, then submit both copies to the tap
+            // for the live noise viewer to pick up. The deep copy is
+            // only paid when a viewer is open.
+            usImage rawCopy;
+            if (!rawCopy.CopyFrom(img))
+            {
+                pNoise->Process(img, nullptr);
+                NoisePipelineTap::Submit(rawCopy, img);
+            }
+            else
+            {
+                pNoise->Process(img, nullptr);
+            }
+        }
+        else
+        {
+            pNoise->Process(img, nullptr);
+        }
+    }
 }
 
 static void InitiateReconnect()

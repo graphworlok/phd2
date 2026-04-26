@@ -40,6 +40,7 @@
 #include "darks_dialog.h"
 #include "image_math.h"
 #include "log_uploader.h"
+#include "noise_live_view.h"
 #include "pierflip_tool.h"
 #include "Refine_DefMap.h"
 #include "starcross_test.h"
@@ -1202,6 +1203,14 @@ void MyFrame::OnPierFlipTool(wxCommandEvent& evt)
         return;
     }
     PierFlipTool::ShowPierFlipCalTool();
+}
+
+void MyFrame::OnNoiseLiveView(wxCommandEvent& /*evt*/)
+{
+    if (!pNoiseLiveViewDlg)
+        pNoiseLiveViewDlg = new NoiseLiveViewDlg(this);
+    pNoiseLiveViewDlg->Show();
+    pNoiseLiveViewDlg->Raise();
 }
 
 void MyFrame::OnPanelClose(wxAuiManagerEvent& evt)

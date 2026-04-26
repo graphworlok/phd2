@@ -114,6 +114,7 @@ EVT_MENU(MENU_LOADDEFECTMAP, MyFrame::OnLoadDefectMap)
 EVT_MENU(MENU_MANGUIDE, MyFrame::OnTestGuide)
 EVT_MENU(MENU_STARCROSS_TEST, MyFrame::OnStarCrossTest)
 EVT_MENU(MENU_PIERFLIP_TOOL, MyFrame::OnPierFlipTool)
+EVT_MENU(MENU_NOISE_LIVE_VIEW, MyFrame::OnNoiseLiveView)
 EVT_MENU(MENU_XHAIR0, MyFrame::OnOverlay)
 EVT_MENU(MENU_XHAIR1, MyFrame::OnOverlay)
 EVT_MENU(MENU_XHAIR2, MyFrame::OnOverlay)
@@ -339,6 +340,7 @@ MyFrame::MyFrame()
     pStaticPaTool = nullptr;
     pManualGuide = nullptr;
     pStarCrossDlg = nullptr;
+    pNoiseLiveViewDlg = nullptr;
     pNudgeLock = nullptr;
     pCometTool = nullptr;
     pGuidingAssistant = nullptr;
@@ -443,6 +445,8 @@ MyFrame::~MyFrame()
         pCalReviewDlg->Destroy();
     if (pStarCrossDlg)
         pStarCrossDlg->Destroy();
+    if (pNoiseLiveViewDlg)
+        pNoiseLiveViewDlg->Destroy();
     if (pierFlipToolWin)
         pierFlipToolWin->Destroy();
 
@@ -509,6 +513,11 @@ void MyFrame::SetupMenuBar()
                        _("Align by analyzing star drift near the celestial pole (Simple)"));
     tools_menu->Append(MENU_STATICPATOOL, _("&Static Polar Align"),
                        _("Align by measuring the RA axis offset from the celestial pole (Fast)"));
+    tools_menu->AppendSeparator();
+    tools_menu->Append(MENU_NOISE_LIVE_VIEW, _("&Noise Pipeline Live View..."),
+                       _("Open a side-by-side view of raw vs. denoised "
+                         "frames as they flow through the noise reduction "
+                         "pipeline"));
     tools_menu->AppendSeparator();
     tools_menu->AppendCheckItem(MENU_SERVER, _("Enable Server"), _("Enable PHD2 server capability"));
     tools_menu->AppendCheckItem(EEGG_STICKY_LOCK, _("Sticky Lock Position"),
