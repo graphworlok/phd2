@@ -285,9 +285,9 @@ static wxString SelectedSensorConfigKey(const GuideCamera *cam)
 
 wxString GuideCamera::GetSelectedSensorName() const
 {
-    return pConfig ? pConfig->Profile.GetString(SelectedSensorConfigKey(this),
-                                                wxEmptyString)
-                   : wxEmptyString;
+    if (!pConfig)
+        return wxString();
+    return pConfig->Profile.GetString(SelectedSensorConfigKey(this), wxEmptyString);
 }
 
 void GuideCamera::SetSelectedSensorName(const wxString& name)
