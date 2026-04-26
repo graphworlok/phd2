@@ -10,6 +10,7 @@
 #include "fitsiowrap.h"
 
 #include <fitsio.h>
+#include <wx/image.h>
 
 #include <algorithm>
 #include <cmath>
@@ -92,6 +93,31 @@ bool DeadZoneMap::Apply(usImage& img, bool fillWithMedian) const
         }
     }
     return replaced > 0;
+}
+
+wxImage DeadZoneMap::RenderRGB(unsigned char deadR, unsigned char deadG,
+                               unsigned char deadB,
+                               unsigned char okR,  unsigned char okG,
+                               unsigned char okB) const
+{
+    if (m_mask.empty() || m_width <= 0 || m_height <= 0)
+        return wxImage();
+
+    // wxImage RGB buffer is interleaved RGBRGB...; allocate via malloc
+    // so wxImage takes ownership when we pass static_data=false.
+    const size_t n = (size_t) m_width * (size_t) m_height;
+    unsigned char *rgb = (unsigned char *) std::malloc(n * 3);
+    if (!rgb)
+        return wxImage();
+    for (size_t i = 0; i < n; ++i)
+    {
+        const bool dead = m_mask[i] != 0;
+        rgb[i * 3 + 0] = dead ? deadR : okR;
+        rgb[i * 3 + 1] = dead ? deadG : okG;
+        rgb[i * 3 + 2] = dead ? deadB : okB;
+    }
+    // false = wxImage takes ownership of the buffer and frees it.
+    return wxImage(m_width, m_height, rgb, false);
 }
 
 wxString DeadZoneMap::MapFilePath(const wxString& camTag)

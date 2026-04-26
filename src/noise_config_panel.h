@@ -54,10 +54,12 @@ class NoiseConfigPanel : public wxPanel
     wxSpinCtrl       *m_dzMinRegion   = nullptr;
     wxButton         *m_dzBuildBtn    = nullptr;
     wxButton         *m_dzClearBtn    = nullptr;
+    wxButton         *m_dzViewBtn     = nullptr;
     wxStaticText     *m_dzStatus      = nullptr;
 
     void OnDzBuild(wxCommandEvent& evt);
     void OnDzClear(wxCommandEvent& evt);
+    void OnDzView(wxCommandEvent& evt);
     void UpdateDzStatus();
 
     void OnReset(wxCommandEvent& evt);

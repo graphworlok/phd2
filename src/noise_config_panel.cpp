@@ -22,6 +22,16 @@
 #include <wx/sizer.h>
 #include <wx/msgdlg.h>
 #include <wx/progdlg.h>
+#include <wx/dialog.h>
+#include <wx/scrolwin.h>
+#include <wx/dcclient.h>
+#include <wx/dcmemory.h>
+#include <wx/image.h>
+#include <wx/bitmap.h>
+#include <wx/statbmp.h>
+#include <wx/choice.h>
+#include <wx/filedlg.h>
+#include <wx/display.h>
 
 static RollingBackgroundStage *FindRolling()
 {
@@ -328,6 +338,16 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
     m_dzClearBtn->Bind(wxEVT_BUTTON, &NoiseConfigPanel::OnDzClear, this);
     dzBtns->Add(m_dzClearBtn, 0, wxRIGHT, 8);
 
+    m_dzViewBtn = new wxButton(dzBox->GetStaticBox(), wxID_ANY,
+                               _("View mask..."));
+    m_dzViewBtn->SetToolTip(_("Opens a viewer that shows the loaded "
+                              "dead-zone mask for the current camera/mode "
+                              "as a red overlay (red = masked, dark = ok). "
+                              "The viewer can also export the mask as a "
+                              "PNG."));
+    m_dzViewBtn->Bind(wxEVT_BUTTON, &NoiseConfigPanel::OnDzView, this);
+    dzBtns->Add(m_dzViewBtn, 0, wxRIGHT, 8);
+
     m_dzStatus = new wxStaticText(dzBox->GetStaticBox(), wxID_ANY, wxEmptyString);
     dzBtns->Add(m_dzStatus, 1, wxALIGN_CENTER_VERTICAL);
 
@@ -390,6 +410,7 @@ void NoiseConfigPanel::LoadValues()
         m_dzEnable->Enable(false);
         m_dzBuildBtn->Enable(false);
         m_dzClearBtn->Enable(false);
+        if (m_dzViewBtn) m_dzViewBtn->Enable(false);
     }
 
     UpdateStatus();
@@ -469,6 +490,171 @@ void NoiseConfigPanel::UpdateDzStatus()
     m_dzStatus->SetLabel(wxString::Format(
         _("Mask: %zu px in %zu regions (%dx%d)"),
         s.maskedPixels, s.regionCount, s.width, s.height));
+}
+
+// ---------------------------------------------------------------------------
+// Dead-zone mask viewer dialog
+// ---------------------------------------------------------------------------
+//
+// Lightweight modal that shows the current mask as a coloured image
+// inside a scrolled window. Three zoom presets so the user can sanity-
+// check both global region distribution (fit-to-window) and individual
+// pixel-cluster shapes (1:1).
+//
+namespace
+{
+
+class DeadZoneViewDlg : public wxDialog
+{
+    wxImage          m_image;       // RGB rendering of the mask, 1:1 scale
+    wxScrolledWindow *m_scroller;
+    wxStaticBitmap   *m_bitmap;
+    int              m_zoomIdx;     // 0 = fit, 1 = 100%, 2 = 200%
+
+    void Rerender()
+    {
+        if (!m_image.IsOk())
+            return;
+
+        wxSize target;
+        if (m_zoomIdx == 0)
+        {
+            // Fit longest side into 80% of the screen.
+            wxSize screen = wxGetDisplaySize();
+            const int maxW = (int) (screen.x * 0.80);
+            const int maxH = (int) (screen.y * 0.70);
+            const double sx = (double) maxW / m_image.GetWidth();
+            const double sy = (double) maxH / m_image.GetHeight();
+            const double s  = std::min(1.0, std::min(sx, sy));
+            target = wxSize((int) (m_image.GetWidth()  * s),
+                            (int) (m_image.GetHeight() * s));
+        }
+        else
+        {
+            const int factor = (m_zoomIdx == 2) ? 2 : 1;
+            target = wxSize(m_image.GetWidth()  * factor,
+                            m_image.GetHeight() * factor);
+        }
+
+        wxImage scaled = (target == m_image.GetSize())
+                       ? m_image
+                       : m_image.Scale(target.x, target.y, wxIMAGE_QUALITY_NEAREST);
+        m_bitmap->SetBitmap(wxBitmap(scaled));
+        m_scroller->SetScrollbars(20, 20, target.x / 20 + 1, target.y / 20 + 1);
+        m_scroller->FitInside();
+        Layout();
+    }
+
+public:
+    DeadZoneViewDlg(wxWindow *parent, wxImage img, const wxString& subtitle)
+        : wxDialog(parent, wxID_ANY, _("Dead-zone mask"),
+                   wxDefaultPosition, wxDefaultSize,
+                   wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+          m_image(std::move(img)),
+          m_scroller(nullptr),
+          m_bitmap(nullptr),
+          m_zoomIdx(0)
+    {
+        wxBoxSizer *top = new wxBoxSizer(wxVERTICAL);
+
+        if (!subtitle.empty())
+            top->Add(new wxStaticText(this, wxID_ANY, subtitle),
+                     0, wxALL, 8);
+
+        m_scroller = new wxScrolledWindow(this, wxID_ANY,
+                                          wxDefaultPosition, wxSize(640, 480),
+                                          wxHSCROLL | wxVSCROLL);
+        m_bitmap = new wxStaticBitmap(m_scroller, wxID_ANY, wxNullBitmap);
+        wxBoxSizer *sc = new wxBoxSizer(wxVERTICAL);
+        sc->Add(m_bitmap, 0);
+        m_scroller->SetSizer(sc);
+        top->Add(m_scroller, 1, wxEXPAND | wxALL, 8);
+
+        wxBoxSizer *btnRow = new wxBoxSizer(wxHORIZONTAL);
+
+        wxArrayString zooms;
+        zooms.Add(_("Fit window"));
+        zooms.Add(_("100% (1:1)"));
+        zooms.Add(_("200%"));
+        wxChoice *zoomChoice = new wxChoice(this, wxID_ANY,
+                                            wxDefaultPosition, wxDefaultSize,
+                                            zooms);
+        zoomChoice->SetSelection(0);
+        zoomChoice->Bind(wxEVT_CHOICE,
+            [this, zoomChoice](wxCommandEvent&) {
+                m_zoomIdx = zoomChoice->GetSelection();
+                Rerender();
+            });
+        btnRow->Add(new wxStaticText(this, wxID_ANY, _("Zoom:")),
+                    0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+        btnRow->Add(zoomChoice, 0, wxRIGHT, 16);
+
+        wxButton *saveBtn = new wxButton(this, wxID_ANY, _("Save PNG..."));
+        saveBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            wxFileDialog fd(this, _("Save dead-zone mask as PNG"),
+                            wxEmptyString, wxT("dead_zone_mask.png"),
+                            _("PNG image (*.png)|*.png"),
+                            wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+            if (fd.ShowModal() == wxID_OK)
+                m_image.SaveFile(fd.GetPath(), wxBITMAP_TYPE_PNG);
+        });
+        btnRow->Add(saveBtn, 0, wxRIGHT, 8);
+
+        wxButton *closeBtn = new wxButton(this, wxID_OK, _("Close"));
+        btnRow->AddStretchSpacer();
+        btnRow->Add(closeBtn, 0);
+
+        top->Add(btnRow, 0, wxEXPAND | wxALL, 8);
+
+        SetSizerAndFit(top);
+        // Don't Fit() against the full image - scrolling handles oversize.
+        SetClientSize(wxSize(720, 560));
+        Centre(wxBOTH);
+
+        Rerender();
+    }
+};
+
+} // namespace
+
+void NoiseConfigPanel::OnDzView(wxCommandEvent& /*evt*/)
+{
+    // Always render from the on-disk file: that's the canonical source
+    // the stage itself loads from, and it works whether or not the
+    // pipeline has run yet this session.
+    const wxString tag = NoiseStageDeadZone::CurrentCameraTag();
+    if (tag.empty())
+    {
+        wxMessageBox(_("Connect the camera whose mask you want to view."),
+                     _("No camera"), wxICON_INFORMATION, this);
+        return;
+    }
+
+    DeadZoneMap m;
+    if (!m.LoadFromDisk(tag))
+    {
+        wxMessageBox(_("No saved dead-zone mask for this camera/mode. "
+                       "Build one first."),
+                     _("Nothing to view"),
+                     wxICON_INFORMATION, this);
+        return;
+    }
+
+    wxImage img = m.RenderRGB();
+    if (!img.IsOk())
+    {
+        wxMessageBox(_("Unable to render the mask."),
+                     _("Render error"), wxICON_ERROR, this);
+        return;
+    }
+
+    const DeadZoneStats st = m.Stats();
+    const wxString subtitle = wxString::Format(
+        _("Camera tag: %s   |   %zu masked px in %zu regions   |   %d \u00D7 %d"),
+        tag, st.maskedPixels, st.regionCount, st.width, st.height);
+
+    DeadZoneViewDlg dlg(this, std::move(img), subtitle);
+    dlg.ShowModal();
 }
 
 void NoiseConfigPanel::OnDzClear(wxCommandEvent& /*evt*/)

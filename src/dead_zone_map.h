@@ -86,6 +86,16 @@ public:
     // Read-only access for the pipeline stage.
     const std::vector<uint8_t>& MaskRef() const { return m_mask; }
 
+    // Render the mask as an RGB wxImage suitable for display in a
+    // wxStaticBitmap or for export. Dead pixels are coloured `dead`,
+    // unmasked pixels `ok`. Both default to a high-contrast palette
+    // (bright red on near-black). Returns an empty image when the
+    // mask is empty.
+    wxImage RenderRGB(unsigned char deadR = 255, unsigned char deadG = 64,
+                      unsigned char deadB = 64,
+                      unsigned char okR   = 16,  unsigned char okG  = 16,
+                      unsigned char okB   = 16) const;
+
 private:
     int m_width = 0;
     int m_height = 0;
