@@ -71,13 +71,16 @@ class RollingBackgroundStage : public NoiseReductionStage
     // Per-camera model persistence helpers. All return false silently
     // when there is no usable hardware id - persistence is disabled in
     // that case, no error is reported.
-    static wxString ModelFilePath(const wxString& camTag);
-    static wxString CurrentCameraTag();   // empty if no id available
     bool LoadModelFromDisk(const wxString& camTag, const wxSize& sz);
     bool SaveModelToDisk(const wxString& camTag) const;
     bool DeleteModelOnDisk(const wxString& camTag) const;
 
 public:
+    // Public so the diagnostics-bundle exporter (and any future
+    // out-of-class consumer) can locate the on-disk model file.
+    static wxString ModelFilePath(const wxString& camTag);
+    static wxString CurrentCameraTag();   // empty if no id available
+
     RollingBackgroundStage();
 
     wxString Name() const override { return wxT("RollingBackground"); }
