@@ -10,6 +10,9 @@
 #include "noise_pipeline.h"
 #include "noise_stage_hot_pixel.h"
 #include "noise_stage_rolling_bg.h"
+#include "noise_stage_dead_zone.h"
+#include "dead_zone_map.h"
+#include "camera.h"
 
 #include <wx/checkbox.h>
 #include <wx/spinctrl.h>
@@ -17,6 +20,8 @@
 #include <wx/stattext.h>
 #include <wx/statbox.h>
 #include <wx/sizer.h>
+#include <wx/msgdlg.h>
+#include <wx/progdlg.h>
 
 static RollingBackgroundStage *FindRolling()
 {
@@ -30,6 +35,13 @@ static HotPixelStage *FindHotPixel()
     if (!pNoise)
         return nullptr;
     return dynamic_cast<HotPixelStage *>(pNoise->FindStage(wxT("HotPixel")));
+}
+
+static NoiseStageDeadZone *FindDeadZone()
+{
+    if (!pNoise)
+        return nullptr;
+    return dynamic_cast<NoiseStageDeadZone *>(pNoise->FindStage(wxT("DeadZone")));
 }
 
 NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
@@ -228,6 +240,101 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
 
     top->Add(hpBox, 0, wxALL | wxEXPAND, 8);
 
+    // ----- Dead-zone mask -----
+    wxStaticBoxSizer *dzBox =
+        new wxStaticBoxSizer(wxVERTICAL, this, _("Dead zones (extended dark calibration)"));
+
+    m_dzEnable = new wxCheckBox(dzBox->GetStaticBox(), wxID_ANY,
+                                _("Enable dead-zone masking"));
+    m_dzEnable->SetToolTip(_("Suppresses output from regions that an extended "
+                             "dark-frame calibration has identified as too "
+                             "noisy to use (RTS pixels, amp glow, edge "
+                             "banding). Star detection cannot pick spurious "
+                             "peaks in masked regions. The mask is bound to "
+                             "the camera's hardware id and capture mode."));
+    dzBox->Add(m_dzEnable, 0, wxALL, 6);
+
+    m_dzFillMedian = new wxCheckBox(dzBox->GetStaticBox(), wxID_ANY,
+                                    _("Fill masked pixels with frame median (else zero)"));
+    m_dzFillMedian->SetToolTip(_("When unchecked, masked pixels are set to 0 - "
+                                 "the cleanest signal for star detection. "
+                                 "When checked, the per-frame median of "
+                                 "unmasked pixels is used so the visual "
+                                 "appearance is less jarring."));
+    dzBox->Add(m_dzFillMedian, 0, wxALL, 6);
+
+    m_dzDiagnostics = new wxCheckBox(dzBox->GetStaticBox(), wxID_ANY,
+                                     _("Emit per-frame diagnostic lines to debug log"));
+    dzBox->Add(m_dzDiagnostics, 0, wxALL, 6);
+
+    wxFlexGridSizer *dzGrid = new wxFlexGridSizer(2, 6, 12);
+    dzGrid->AddGrowableCol(1, 1);
+
+    auto addDzRow = [&](const wxString& label, wxWindow *ctrl, const wxString& tip)
+    {
+        wxStaticText *t = new wxStaticText(dzBox->GetStaticBox(), wxID_ANY, label);
+        dzGrid->Add(t, 0, wxALIGN_CENTER_VERTICAL);
+        dzGrid->Add(ctrl, 0, wxEXPAND);
+        if (!tip.empty())
+        {
+            t->SetToolTip(tip);
+            ctrl->SetToolTip(tip);
+        }
+    };
+
+    m_dzNumFrames = new wxSpinCtrl(dzBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                   wxDefaultPosition, wxDefaultSize,
+                                   wxSP_ARROW_KEYS, 8, 500, 64);
+    addDzRow(_("Calibration frames:"), m_dzNumFrames,
+             _("Number of dark frames captured during the build process. "
+               "More frames give a tighter per-pixel variance estimate; "
+               "anything under 16 is barely better than the standard BPM "
+               "calibration."));
+
+    m_dzSigma = new wxSpinCtrlDouble(dzBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                     wxDefaultPosition, wxDefaultSize,
+                                     wxSP_ARROW_KEYS, 1.5, 20.0, 4.0, 0.25);
+    m_dzSigma->SetDigits(2);
+    addDzRow(_("Noise sigma multiplier:"), m_dzSigma,
+             _("A pixel is flagged when its temporal stdev exceeds the "
+               "median pixel stdev by this multiple. Lower = more pixels "
+               "flagged."));
+
+    m_dzMinRegion = new wxSpinCtrl(dzBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                   wxDefaultPosition, wxDefaultSize,
+                                   wxSP_ARROW_KEYS, 1, 100, 4);
+    addDzRow(_("Min region size (px):"), m_dzMinRegion,
+             _("Connected groups of flagged pixels smaller than this are "
+               "discarded - they belong in the bad-pixel map, not the "
+               "dead-zone map."));
+
+    dzBox->Add(dzGrid, 0, wxALL | wxEXPAND, 6);
+
+    wxBoxSizer *dzBtns = new wxBoxSizer(wxHORIZONTAL);
+    m_dzBuildBtn = new wxButton(dzBox->GetStaticBox(), wxID_ANY,
+                                _("Build dead-zone map..."));
+    m_dzBuildBtn->SetToolTip(_("Captures the configured number of dark "
+                               "frames synchronously, computes per-pixel "
+                               "temporal variance, and saves a mask bound "
+                               "to this camera and mode. Cover the lens "
+                               "or close the shutter before starting."));
+    m_dzBuildBtn->Bind(wxEVT_BUTTON, &NoiseConfigPanel::OnDzBuild, this);
+    dzBtns->Add(m_dzBuildBtn, 0, wxRIGHT, 8);
+
+    m_dzClearBtn = new wxButton(dzBox->GetStaticBox(), wxID_ANY,
+                                _("Clear saved map"));
+    m_dzClearBtn->SetToolTip(_("Deletes the saved mask file for this "
+                               "camera/mode."));
+    m_dzClearBtn->Bind(wxEVT_BUTTON, &NoiseConfigPanel::OnDzClear, this);
+    dzBtns->Add(m_dzClearBtn, 0, wxRIGHT, 8);
+
+    m_dzStatus = new wxStaticText(dzBox->GetStaticBox(), wxID_ANY, wxEmptyString);
+    dzBtns->Add(m_dzStatus, 1, wxALIGN_CENTER_VERTICAL);
+
+    dzBox->Add(dzBtns, 0, wxALL | wxEXPAND, 6);
+
+    top->Add(dzBox, 0, wxALL | wxEXPAND, 8);
+
     // Info blurb for future stages / auto-tune hook
     wxStaticText *info = new wxStaticText(this, wxID_ANY,
         _("Additional noise-reduction stages and camera auto-tuning will "
@@ -272,7 +379,21 @@ void NoiseConfigPanel::LoadValues()
         m_hpEnable->Enable(false);
     }
 
+    if (NoiseStageDeadZone *dz = FindDeadZone())
+    {
+        m_dzEnable->SetValue(dz->IsEnabled());
+        m_dzFillMedian->SetValue(dz->GetFillWithMedian());
+        m_dzDiagnostics->SetValue(dz->GetDiagnostics());
+    }
+    else if (m_dzEnable)
+    {
+        m_dzEnable->Enable(false);
+        m_dzBuildBtn->Enable(false);
+        m_dzClearBtn->Enable(false);
+    }
+
     UpdateStatus();
+    UpdateDzStatus();
 }
 
 void NoiseConfigPanel::UnloadValues()
@@ -305,6 +426,14 @@ void NoiseConfigPanel::UnloadValues()
         hp->SetDiagnostics(m_hpDiagnostics->GetValue());
         hp->SaveConfig();
     }
+
+    if (NoiseStageDeadZone *dz = FindDeadZone())
+    {
+        dz->SetEnabled(m_dzEnable->GetValue());
+        dz->SetFillWithMedian(m_dzFillMedian->GetValue());
+        dz->SetDiagnostics(m_dzDiagnostics->GetValue());
+        dz->SaveConfig();
+    }
 }
 
 void NoiseConfigPanel::OnReset(wxCommandEvent& /*evt*/)
@@ -313,6 +442,171 @@ void NoiseConfigPanel::OnReset(wxCommandEvent& /*evt*/)
     if (s)
         s->Reset();
     UpdateStatus();
+}
+
+void NoiseConfigPanel::UpdateDzStatus()
+{
+    if (!m_dzStatus)
+        return;
+    NoiseStageDeadZone *dz = FindDeadZone();
+    if (!dz)
+    {
+        m_dzStatus->SetLabel(_("Dead-zone stage not available"));
+        return;
+    }
+    const wxString tag = NoiseStageDeadZone::CurrentCameraTag();
+    if (tag.empty())
+    {
+        m_dzStatus->SetLabel(_("Camera not connected - cannot bind a mask"));
+        return;
+    }
+    const DeadZoneStats s = dz->CurrentStats();
+    if (s.maskedPixels == 0)
+    {
+        m_dzStatus->SetLabel(_("No mask loaded for this camera/mode"));
+        return;
+    }
+    m_dzStatus->SetLabel(wxString::Format(
+        _("Mask: %zu px in %zu regions (%dx%d)"),
+        s.maskedPixels, s.regionCount, s.width, s.height));
+}
+
+void NoiseConfigPanel::OnDzClear(wxCommandEvent& /*evt*/)
+{
+    NoiseStageDeadZone *dz = FindDeadZone();
+    if (!dz)
+        return;
+    if (wxMessageBox(_("Delete the saved dead-zone mask for the current "
+                       "camera and mode? The next session will start with "
+                       "no mask until you build a new one."),
+                     _("Clear dead-zone map"),
+                     wxYES_NO | wxICON_QUESTION, this) != wxYES)
+        return;
+    dz->ClearCurrent();
+    UpdateDzStatus();
+}
+
+void NoiseConfigPanel::OnDzBuild(wxCommandEvent& /*evt*/)
+{
+    NoiseStageDeadZone *dz = FindDeadZone();
+    if (!dz)
+        return;
+
+    if (!pCamera || !pCamera->Connected)
+    {
+        wxMessageBox(_("Connect a camera before building a dead-zone map."),
+                     _("Camera not connected"), wxICON_ERROR, this);
+        return;
+    }
+
+    const wxString tag = NoiseStageDeadZone::CurrentCameraTag();
+    if (tag.empty())
+    {
+        wxMessageBox(_("This camera has no stable hardware id, so a "
+                       "dead-zone mask cannot be saved against it."),
+                     _("No hardware id"), wxICON_ERROR, this);
+        return;
+    }
+
+    const int numFrames = m_dzNumFrames->GetValue();
+    const int expMs = (pFrame ? pFrame->RequestedExposureDuration() : 1000);
+    if (expMs <= 0)
+    {
+        wxMessageBox(_("Set a positive exposure on the main window before "
+                       "building a dead-zone map."),
+                     _("Invalid exposure"), wxICON_ERROR, this);
+        return;
+    }
+
+    if (wxMessageBox(wxString::Format(
+                _("This will capture %d dark frames at %.2f s. "
+                  "Cover the lens or close the shutter, then click OK."),
+                numFrames, expMs / 1000.0),
+            _("Build dead-zone map"),
+            wxOK | wxCANCEL | wxICON_INFORMATION, this) != wxOK)
+        return;
+
+    DeadZoneBuilder builder;
+    builder.Begin(pCamera->FrameSize.GetWidth(), pCamera->FrameSize.GetHeight());
+
+    wxProgressDialog progress(_("Building dead-zone map"),
+                              _("Capturing calibration frames..."),
+                              numFrames, this,
+                              wxPD_CAN_ABORT | wxPD_AUTO_HIDE | wxPD_APP_MODAL);
+
+    pCamera->InitCapture();
+    bool aborted = false;
+    int captured = 0;
+    for (int i = 1; i <= numFrames; ++i)
+    {
+        if (!progress.Update(i - 1,
+                             wxString::Format(_("Capturing frame %d / %d"),
+                                              i, numFrames)))
+        {
+            aborted = true;
+            break;
+        }
+
+        usImage frame;
+        CaptureParams cp;
+        cp.duration = expMs;
+        cp.hwBinning = pCamera->HwBinning;
+        cp.swBinning = 1;
+        cp.bpp = pCamera->BitsPerPixel();
+        cp.gain = pCamera->GuideCameraGain;
+        cp.captureOptions = CAPTURE_DARK;
+
+        if (GuideCamera::Capture(pCamera, frame, cp))
+        {
+            wxMessageBox(_("Frame capture failed - aborting build."),
+                         _("Capture error"), wxICON_ERROR, this);
+            aborted = true;
+            break;
+        }
+
+        builder.AddFrame(frame);
+        ++captured;
+        wxYield();
+    }
+    progress.Update(numFrames);
+
+    if (aborted || captured < 2)
+    {
+        wxMessageBox(_("Build aborted; no mask was saved."),
+                     _("Aborted"), wxICON_INFORMATION, this);
+        return;
+    }
+
+    DeadZoneBuilder::Params params;
+    params.sigmaMultiplier = (float) m_dzSigma->GetValue();
+    params.minRegionPx     = m_dzMinRegion->GetValue();
+    // Other params stay at defaults; advanced users can edit the FITS
+    // by hand or rebuild with adjusted code.
+
+    DeadZoneMap map;
+    if (!builder.Finalize(params, &map))
+    {
+        wxMessageBox(_("Failed to finalize dead-zone mask."),
+                     _("Build error"), wxICON_ERROR, this);
+        return;
+    }
+    if (!dz->AdoptAndSave(std::move(map), true))
+    {
+        wxMessageBox(_("Mask was built but could not be saved to disk."),
+                     _("Save error"), wxICON_WARNING, this);
+    }
+    UpdateDzStatus();
+
+    const DeadZoneStats s = dz->CurrentStats();
+    wxMessageBox(wxString::Format(
+                     _("Dead-zone build complete.\n\n"
+                       "Captured frames: %d\n"
+                       "Masked pixels: %zu\n"
+                       "Connected regions: %zu\n\n"
+                       "Saved to: %s"),
+                     captured, s.maskedPixels, s.regionCount,
+                     NoiseStageDeadZone::CurrentMapPath()),
+                 _("Dead-zone build"), wxICON_INFORMATION, this);
 }
 
 void NoiseConfigPanel::UpdateStatus()

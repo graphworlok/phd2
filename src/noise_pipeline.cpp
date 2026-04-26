@@ -9,6 +9,7 @@
 #include "noise_pipeline.h"
 #include "noise_stage_hot_pixel.h"
 #include "noise_stage_rolling_bg.h"
+#include "noise_stage_dead_zone.h"
 
 NoisePipeline *pNoise = nullptr;
 
@@ -77,6 +78,12 @@ void InitNoisePipeline()
     // spikes pollute the EMA's outlier detector during the warmup phase.
     pNoise->AddStage(std::unique_ptr<NoiseReductionStage>(new HotPixelStage()));
     pNoise->AddStage(std::unique_ptr<NoiseReductionStage>(new RollingBackgroundStage()));
+    // DeadZone runs last: it overwrites flagged regions in the
+    // already-background-subtracted frame so the star detector cannot
+    // find spurious peaks there. Running it earlier would force
+    // RollingBackground to observe synthetic fill values, which would
+    // bias the model in those areas.
+    pNoise->AddStage(std::unique_ptr<NoiseReductionStage>(new NoiseStageDeadZone()));
     pNoise->LoadConfig();
 }
 

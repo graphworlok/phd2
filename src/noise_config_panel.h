@@ -45,6 +45,21 @@ class NoiseConfigPanel : public wxPanel
     wxSpinCtrl       *m_hpMaxRepl     = nullptr;
     wxCheckBox       *m_hpDiagnostics = nullptr;
 
+    // Dead-zone stage controls
+    wxCheckBox       *m_dzEnable      = nullptr;
+    wxCheckBox       *m_dzFillMedian  = nullptr;
+    wxCheckBox       *m_dzDiagnostics = nullptr;
+    wxSpinCtrl       *m_dzNumFrames   = nullptr;
+    wxSpinCtrlDouble *m_dzSigma       = nullptr;
+    wxSpinCtrl       *m_dzMinRegion   = nullptr;
+    wxButton         *m_dzBuildBtn    = nullptr;
+    wxButton         *m_dzClearBtn    = nullptr;
+    wxStaticText     *m_dzStatus      = nullptr;
+
+    void OnDzBuild(wxCommandEvent& evt);
+    void OnDzClear(wxCommandEvent& evt);
+    void UpdateDzStatus();
+
     void OnReset(wxCommandEvent& evt);
     void UpdateStatus();
 

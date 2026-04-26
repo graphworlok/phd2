@@ -421,6 +421,10 @@ set(phd2_SRC
   ${phd_src_dir}/noise_stage_hot_pixel.h
   ${phd_src_dir}/noise_stage_rolling_bg.cpp
   ${phd_src_dir}/noise_stage_rolling_bg.h
+  ${phd_src_dir}/noise_stage_dead_zone.cpp
+  ${phd_src_dir}/noise_stage_dead_zone.h
+  ${phd_src_dir}/dead_zone_map.cpp
+  ${phd_src_dir}/dead_zone_map.h
   ${phd_src_dir}/sensor_db.cpp
   ${phd_src_dir}/sensor_db.h
   ${phd_src_dir}/nudge_lock.cpp
