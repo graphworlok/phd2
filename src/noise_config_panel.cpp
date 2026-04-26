@@ -8,6 +8,7 @@
 #include "phd.h"
 #include "noise_config_panel.h"
 #include "noise_pipeline.h"
+#include "noise_stage_hot_pixel.h"
 #include "noise_stage_rolling_bg.h"
 
 #include <wx/checkbox.h>
@@ -22,6 +23,13 @@ static RollingBackgroundStage *FindRolling()
     if (!pNoise)
         return nullptr;
     return dynamic_cast<RollingBackgroundStage *>(pNoise->FindStage(wxT("RollingBackground")));
+}
+
+static HotPixelStage *FindHotPixel()
+{
+    if (!pNoise)
+        return nullptr;
+    return dynamic_cast<HotPixelStage *>(pNoise->FindStage(wxT("HotPixel")));
 }
 
 NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
@@ -156,6 +164,70 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
     wxBoxSizer *top = new wxBoxSizer(wxVERTICAL);
     top->Add(rbgBox, 0, wxALL | wxEXPAND, 8);
 
+    // ----- Hot-pixel rejection -----
+    wxStaticBoxSizer *hpBox =
+        new wxStaticBoxSizer(wxVERTICAL, this, _("Hot-pixel / cosmic-ray rejection"));
+
+    m_hpEnable = new wxCheckBox(hpBox->GetStaticBox(), wxID_ANY,
+                                _("Enable spatial 3x3 median hot-pixel filter"));
+    m_hpEnable->SetToolTip(_("Replaces isolated bright pixels (cosmic rays, "
+                             "transient hot pixels, satellite hits) with the "
+                             "median of their 3x3 neighbourhood. Stateless and "
+                             "active from frame one, so it complements the "
+                             "rolling background model which needs warmup."));
+    hpBox->Add(m_hpEnable, 0, wxALL, 6);
+
+    wxFlexGridSizer *hpGrid = new wxFlexGridSizer(2, 6, 12);
+    hpGrid->AddGrowableCol(1, 1);
+
+    auto addHpRow = [&](const wxString& label, wxWindow *ctrl, const wxString& tip)
+    {
+        wxStaticText *t = new wxStaticText(hpBox->GetStaticBox(), wxID_ANY, label);
+        hpGrid->Add(t, 0, wxALIGN_CENTER_VERTICAL);
+        hpGrid->Add(ctrl, 0, wxEXPAND);
+        if (!tip.empty())
+        {
+            t->SetToolTip(tip);
+            ctrl->SetToolTip(tip);
+        }
+    };
+
+    m_hpRatio = new wxSpinCtrlDouble(hpBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                     wxDefaultPosition, wxDefaultSize,
+                                     wxSP_ARROW_KEYS, 1.5, 20.0, 3.0, 0.25);
+    m_hpRatio->SetDigits(2);
+    addHpRow(_("Median ratio threshold:"), m_hpRatio,
+             _("A pixel is replaced when it exceeds the local 3x3 median by "
+               "this multiplicative factor. 3.0 = pixel is at least 3x brighter "
+               "than its neighbours."));
+
+    m_hpAbsOffset = new wxSpinCtrl(hpBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                   wxDefaultPosition, wxDefaultSize,
+                                   wxSP_ARROW_KEYS, 0, 16383, 200);
+    addHpRow(_("Absolute offset (ADU):"), m_hpAbsOffset,
+             _("In addition to the ratio test, the centre must exceed the "
+               "median by at least this many ADU (16-bit scale). Prevents "
+               "over-firing in dark regions where the ratio is unstable."));
+
+    m_hpMaxRepl = new wxSpinCtrl(hpBox->GetStaticBox(), wxID_ANY, wxEmptyString,
+                                 wxDefaultPosition, wxDefaultSize,
+                                 wxSP_ARROW_KEYS, 0, 200000, 5000);
+    addHpRow(_("Max replacements / frame:"), m_hpMaxRepl,
+             _("If more pixels than this would be flagged, the filter aborts "
+               "for that frame and leaves it untouched. Guards against "
+               "wholesale corruption from cloud edges, dew, or focuser drift. "
+               "Set to 0 to disable the cap."));
+
+    hpBox->Add(hpGrid, 0, wxALL | wxEXPAND, 6);
+
+    m_hpDiagnostics = new wxCheckBox(hpBox->GetStaticBox(), wxID_ANY,
+                                     _("Emit per-frame diagnostic lines to debug log"));
+    m_hpDiagnostics->SetToolTip(_("Writes a line per frame indicating how many "
+                                  "pixels were replaced or whether the cap was hit."));
+    hpBox->Add(m_hpDiagnostics, 0, wxALL, 6);
+
+    top->Add(hpBox, 0, wxALL | wxEXPAND, 8);
+
     // Info blurb for future stages / auto-tune hook
     wxStaticText *info = new wxStaticText(this, wxID_ANY,
         _("Additional noise-reduction stages and camera auto-tuning will "
@@ -187,6 +259,19 @@ void NoiseConfigPanel::LoadValues()
     m_persistModel->SetValue(s->GetPersistModel());
     m_diagnostics->SetValue(s->GetDiagnostics());
 
+    if (HotPixelStage *hp = FindHotPixel())
+    {
+        m_hpEnable->SetValue(hp->IsEnabled());
+        m_hpRatio->SetValue(hp->GetRatio());
+        m_hpAbsOffset->SetValue(hp->GetAbsOffset());
+        m_hpMaxRepl->SetValue(hp->GetMaxReplacements());
+        m_hpDiagnostics->SetValue(hp->GetDiagnostics());
+    }
+    else if (m_hpEnable)
+    {
+        m_hpEnable->Enable(false);
+    }
+
     UpdateStatus();
 }
 
@@ -210,6 +295,16 @@ void NoiseConfigPanel::UnloadValues()
 
     // Persist via the stage so per-camera overrides are honoured.
     s->SaveConfig();
+
+    if (HotPixelStage *hp = FindHotPixel())
+    {
+        hp->SetEnabled(m_hpEnable->GetValue());
+        hp->SetRatio((float) m_hpRatio->GetValue());
+        hp->SetAbsOffset(m_hpAbsOffset->GetValue());
+        hp->SetMaxReplacements(m_hpMaxRepl->GetValue());
+        hp->SetDiagnostics(m_hpDiagnostics->GetValue());
+        hp->SaveConfig();
+    }
 }
 
 void NoiseConfigPanel::OnReset(wxCommandEvent& /*evt*/)

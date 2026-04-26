@@ -417,6 +417,8 @@ set(phd2_SRC
   ${phd_src_dir}/noise_config_panel.h
   ${phd_src_dir}/noise_pipeline.cpp
   ${phd_src_dir}/noise_pipeline.h
+  ${phd_src_dir}/noise_stage_hot_pixel.cpp
+  ${phd_src_dir}/noise_stage_hot_pixel.h
   ${phd_src_dir}/noise_stage_rolling_bg.cpp
   ${phd_src_dir}/noise_stage_rolling_bg.h
   ${phd_src_dir}/sensor_db.cpp

@@ -7,6 +7,7 @@
 
 #include "phd.h"
 #include "noise_pipeline.h"
+#include "noise_stage_hot_pixel.h"
 #include "noise_stage_rolling_bg.h"
 
 NoisePipeline *pNoise = nullptr;
@@ -70,6 +71,11 @@ void InitNoisePipeline()
     if (pNoise)
         return;
     pNoise = new NoisePipeline();
+    // HotPixel runs first: it's a stateless spatial filter that strips
+    // cosmic rays and isolated hot pixels before RollingBackground gets
+    // to observe the frame. Doing it the other way round would let those
+    // spikes pollute the EMA's outlier detector during the warmup phase.
+    pNoise->AddStage(std::unique_ptr<NoiseReductionStage>(new HotPixelStage()));
     pNoise->AddStage(std::unique_ptr<NoiseReductionStage>(new RollingBackgroundStage()));
     pNoise->LoadConfig();
 }

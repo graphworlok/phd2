@@ -38,6 +38,13 @@ class NoiseConfigPanel : public wxPanel
     wxButton         *m_resetBtn      = nullptr;
     wxStaticText     *m_status        = nullptr;
 
+    // Hot-pixel stage controls
+    wxCheckBox       *m_hpEnable      = nullptr;
+    wxSpinCtrlDouble *m_hpRatio       = nullptr;
+    wxSpinCtrl       *m_hpAbsOffset   = nullptr;
+    wxSpinCtrl       *m_hpMaxRepl     = nullptr;
+    wxCheckBox       *m_hpDiagnostics = nullptr;
+
     void OnReset(wxCommandEvent& evt);
     void UpdateStatus();
 
