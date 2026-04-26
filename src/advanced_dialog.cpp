@@ -37,6 +37,8 @@
 #include "noise_config_panel.h"
 
 #include <wx/tipwin.h>
+#include <wx/scrolwin.h>
+#include <wx/display.h>
 
 #if defined(__WXOSX__)
 # include <wx/choicebk.h>
@@ -191,13 +193,25 @@ AdvancedDialog::AdvancedDialog(MyFrame *pFrame)
     m_pDevicesSettingsPanel->SetSizer(pDevicesTabSizer);
     m_pNotebook->AddPage(m_pDevicesSettingsPanel, _("Other Devices"));
 
-    // Noise-reduction pipeline pane
-    m_pNoiseSettingsPanel = new wxPanel(m_pNotebook);
-    wxBoxSizer *pNoiseTabSizer = new wxBoxSizer(wxVERTICAL);
-    m_pNoiseSettingsPanel->SetSizer(pNoiseTabSizer);
-    m_pNotebook->AddPage(m_pNoiseSettingsPanel, _("Noise"));
-    m_pNoisePanel = new NoiseConfigPanel(m_pNoiseSettingsPanel);
-    pNoiseTabSizer->Add(m_pNoisePanel, sizer_flags);
+    // Noise-reduction pipeline pane. Wrapped in a wxScrolledWindow
+    // because the noise pipeline grows with each added stage and can
+    // otherwise push the Advanced Settings dialog below the bottom of
+    // the screen on smaller displays.
+    {
+        wxScrolledWindow *scroll =
+            new wxScrolledWindow(m_pNotebook, wxID_ANY,
+                                 wxDefaultPosition, wxDefaultSize,
+                                 wxVSCROLL | wxHSCROLL);
+        wxBoxSizer *pNoiseTabSizer = new wxBoxSizer(wxVERTICAL);
+        scroll->SetSizer(pNoiseTabSizer);
+        m_pNoisePanel = new NoiseConfigPanel(scroll);
+        pNoiseTabSizer->Add(m_pNoisePanel, sizer_flags);
+        // Pixel-level scroll rates - 16 px feels right for spin-control
+        // rows; horizontal is rarely needed but kept for narrow windows.
+        scroll->SetScrollRate(16, 16);
+        m_pNotebook->AddPage(scroll, _("Noise"));
+        m_pNoiseSettingsPanel = scroll;
+    }
 
     BuildCtrlSets(); // Populates the m_brainCtrls map with all UI controls
 
@@ -238,6 +252,7 @@ AdvancedDialog::AdvancedDialog(MyFrame *pFrame)
     bsz->Prepend(helpbtn);
     pTopLevelSizer->Add(bsz, wxSizerFlags(0).Expand().Border(wxALL, 5));
     SetSizerAndFit(pTopLevelSizer);
+    ClampToWorkArea();
 
     EnableValidators(this);
 
@@ -334,9 +349,35 @@ void AdvancedDialog::RebuildPanels()
 
     GetSizer()->Layout();
     GetSizer()->Fit(this);
+    ClampToWorkArea();
     m_rebuildPanels = false;
 
     ConfirmLayouts(); // maybe should be under compiletime option
+}
+
+// Keep the dialog within the work area of its current display. Called
+// after Fit() / SetSizerAndFit(). The Noise tab grows as more pipeline
+// stages are added, and on smaller / DPI-scaled displays the fitted
+// size can drop the OK/Cancel row below the bottom of the screen.
+void AdvancedDialog::ClampToWorkArea()
+{
+    const int dispIdx = wxDisplay::GetFromWindow(this);
+    const wxRect work = (dispIdx == wxNOT_FOUND)
+        ? wxDisplay().GetClientArea()
+        : wxDisplay(dispIdx).GetClientArea();
+    wxSize sz = GetSize();
+    const int maxW = (int)(work.width  * 0.95);
+    const int maxH = (int)(work.height * 0.95);
+    bool clamped = false;
+    if (sz.x > maxW) { sz.x = maxW; clamped = true; }
+    if (sz.y > maxH) { sz.y = maxH; clamped = true; }
+    if (clamped)
+    {
+        SetSize(sz);
+        // Re-centre so a clamped dialog isn't anchored at its old
+        // top-left position partly offscreen.
+        CentreOnScreen();
+    }
 }
 
 // Needed by ConfigDialogCtrlSets to know what parent to use when creating a control

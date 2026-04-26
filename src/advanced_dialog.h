@@ -129,6 +129,7 @@ private:
     void AddRotatorPage();
     size_t FindPage(wxWindow *ctrl);
     void RebuildPanels();
+    void ClampToWorkArea();
     void BuildCtrlSets();
     void CleanupCtrlSets();
     void ConfirmLayouts();
