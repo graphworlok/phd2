@@ -1652,6 +1652,10 @@ class V4L2PropDlg : public wxDialog
     void OnReset(wxCommandEvent&);
     void OnApply(wxCommandEvent&);
 
+    // Refreshes the sensor-info and resolution-AR-match labels from
+    // the current selections. Called whenever either wxChoice changes.
+    void RefreshDerivedInfo();
+
 public:
     // nullptr if the control is unavailable on this device
     wxChoice   *m_resolution;
@@ -1660,6 +1664,10 @@ public:
     wxSpinCtrl *m_brightness;
     wxSpinCtrl *m_contrast;
     wxSpinCtrl *m_gamma;
+
+    // Read-only info labels, refreshed live as choices change.
+    wxStaticText *m_resolutionInfo; // AR match indicator
+    wxStaticText *m_sensorInfo;     // physical / electrical sensor details
 
     V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam);
     void ApplySettings();
@@ -1715,7 +1723,9 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
       m_sensor(nullptr),
       m_brightness(nullptr),
       m_contrast(nullptr),
-      m_gamma(nullptr)
+      m_gamma(nullptr),
+      m_resolutionInfo(nullptr),
+      m_sensorInfo(nullptr)
 {
     wxBoxSizer *top = new wxBoxSizer(wxVERTICAL);
 
@@ -1829,6 +1839,14 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
                                     wxDefaultSize, resChoices);
         m_resolution->SetSelection(curSel);
         grid->Add(m_resolution, wxSizerFlags().Expand().Border(wxALL, 4));
+
+        // Aspect-ratio match indicator. Sits in column 2 under the
+        // resolution choice; column 1 is left blank so the indicator
+        // visually hangs off the control it describes.
+        grid->AddSpacer(0);
+        m_resolutionInfo = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        grid->Add(m_resolutionInfo,
+                  wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM, 4));
     }
 
     // Sensor selection. Always offered: it's a property of the
@@ -1869,6 +1887,23 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
                                "Selection is remembered per-camera (by "
                                "hardware id) and survives reconnects."));
         grid->Add(m_sensor, wxSizerFlags().Expand().Border(wxALL, 4));
+
+        // Live sensor info pane. Multi-line static text so we can show
+        // pixel size, array geometry, physical size, aspect ratio,
+        // colour array, bit depth and read noise in one block.
+        grid->AddSpacer(0);
+        m_sensorInfo = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        grid->Add(m_sensorInfo,
+                  wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM, 4));
+
+        // Wire live updates: changing either selection rebuilds both
+        // info labels (the AR-match indicator depends on the sensor
+        // too).
+        m_sensor->Bind(wxEVT_CHOICE,
+                       [this](wxCommandEvent&) { RefreshDerivedInfo(); });
+        if (m_resolution)
+            m_resolution->Bind(wxEVT_CHOICE,
+                               [this](wxCommandEvent&) { RefreshDerivedInfo(); });
     }
 
     // Exposure mode
@@ -1947,8 +1982,160 @@ V4L2PropDlg::V4L2PropDlg(wxWindow *parent, CameraV4L2 *cam)
     resetBtn->Bind(wxEVT_BUTTON, &V4L2PropDlg::OnReset, this);
     Bind(wxEVT_BUTTON, &V4L2PropDlg::OnApply, this, wxID_APPLY);
 
+    // Populate the live info labels for the initial selections.
+    RefreshDerivedInfo();
+
     SetSizerAndFit(top);
     Centre(wxBOTH);
+}
+
+// Returns "16:9", "4:3" etc. for tidy aspect-ratio strings, or
+// "%.2f:1" if the ratio doesn't reduce to common small integers.
+static wxString FormatAspectRatio(int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return wxString();
+    // GCD reduction for the canonical case.
+    int a = w, b = h;
+    while (b)
+    {
+        int t = a % b;
+        a = b;
+        b = t;
+    }
+    const int rw = w / a;
+    const int rh = h / a;
+    if (rw <= 32 && rh <= 32)
+        return wxString::Format("%d:%d", rw, rh);
+    return wxString::Format("%.3f:1", (double) w / (double) h);
+}
+
+void V4L2PropDlg::RefreshDerivedInfo()
+{
+    // Resolve the currently chosen sensor (index 0 == "auto/unknown").
+    const Sensor *sensor = nullptr;
+    if (m_sensor)
+    {
+        const int sel = m_sensor->GetSelection();
+        if (sel > 0)
+            sensor = SensorDatabase::FindNoCase(m_sensor->GetString(sel));
+    }
+
+    // ----- Sensor info pane -----
+    if (m_sensorInfo)
+    {
+        if (!sensor)
+        {
+            m_sensorInfo->SetLabel(_("No sensor selected; properties will be "
+                                     "guessed from the V4L2 driver."));
+        }
+        else
+        {
+            wxString s;
+            if (sensor->pixelSizeUm > 0.0)
+                s += wxString::Format(_("Pixel: %.2f \u00B5m"),
+                                      sensor->pixelSizeUm);
+
+            if (sensor->arrayWidth > 0 && sensor->arrayHeight > 0)
+            {
+                if (!s.empty()) s += "  |  ";
+                s += wxString::Format(_("Array: %d \u00D7 %d"),
+                                      sensor->arrayWidth, sensor->arrayHeight);
+
+                if (sensor->pixelSizeUm > 0.0)
+                {
+                    const double mmW = sensor->arrayWidth  * sensor->pixelSizeUm / 1000.0;
+                    const double mmH = sensor->arrayHeight * sensor->pixelSizeUm / 1000.0;
+                    const double diag = std::sqrt(mmW * mmW + mmH * mmH);
+                    s += wxString::Format(_("  |  Size: %.2f \u00D7 %.2f mm "
+                                            "(diag %.2f mm)"),
+                                          mmW, mmH, diag);
+                }
+
+                s += wxString::Format("  |  AR %s",
+                    FormatAspectRatio(sensor->arrayWidth, sensor->arrayHeight));
+            }
+
+            wxString s2;
+            if (sensor->bitDepth > 0)
+                s2 += wxString::Format(_("%d-bit ADC"), sensor->bitDepth);
+            const wxString colorStr =
+                SensorDatabase::ColorArrayToString(sensor->colorArray);
+            if (!colorStr.empty())
+            {
+                if (!s2.empty()) s2 += "  |  ";
+                s2 += colorStr;
+            }
+            if (sensor->fullWellE > 0.0)
+            {
+                if (!s2.empty()) s2 += "  |  ";
+                s2 += wxString::Format(_("Full well %.0f e-"), sensor->fullWellE);
+            }
+            if (sensor->readNoiseE > 0.0)
+            {
+                if (!s2.empty()) s2 += "  |  ";
+                s2 += wxString::Format(_("Read noise %.1f e-"), sensor->readNoiseE);
+            }
+            if (!s2.empty())
+                s += "\n" + s2;
+
+            if (s.empty())
+                s = _("No metadata in sensors.xml for this entry.");
+            m_sensorInfo->SetLabel(s);
+        }
+    }
+
+    // ----- Resolution AR-match indicator -----
+    if (m_resolutionInfo && m_resolution)
+    {
+        const int sel = m_resolution->GetSelection();
+        if (sel < 0 || sel >= (int) m_cam->m_resolutions.size())
+        {
+            m_resolutionInfo->SetLabel(wxEmptyString);
+        }
+        else
+        {
+            const V4L2Resolution& r = m_cam->m_resolutions[sel];
+            wxString line = wxString::Format("%s %s",
+                _("Aspect:"),
+                FormatAspectRatio((int) r.width, (int) r.height));
+
+            if (sensor && sensor->arrayWidth > 0 && sensor->arrayHeight > 0)
+            {
+                const double sensorAR = (double) sensor->arrayWidth  /
+                                        (double) sensor->arrayHeight;
+                const double resAR    = (double) r.width / (double) r.height;
+                // 0.5% tolerance: covers integer rounding (e.g. 1280x960
+                // vs sensor 1296x972 are both 4:3 but not exactly equal).
+                const double tol      = 0.005;
+                const bool match = std::fabs(sensorAR - resAR) <
+                                   tol * sensorAR;
+
+                const bool fullFrame =
+                    (int) r.width  == sensor->arrayWidth &&
+                    (int) r.height == sensor->arrayHeight;
+
+                if (fullFrame)
+                    line += _("  - matches sensor native (full frame)");
+                else if (match)
+                    line += _("  - matches sensor native aspect (likely "
+                              "binned or scaled, no crop)");
+                else
+                    line += _("  - DIFFERS from sensor native aspect "
+                              "(cropped / letterboxed - reduced FOV)");
+            }
+            else
+            {
+                line += _("  (sensor aspect unknown - select a sensor "
+                          "above to enable the match check)");
+            }
+            m_resolutionInfo->SetLabel(line);
+        }
+    }
+
+    // The dialog grew/shrank; re-layout so the new text isn't clipped.
+    Layout();
+    Fit();
 }
 
 void V4L2PropDlg::ApplySettings()
