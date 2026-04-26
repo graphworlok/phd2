@@ -32,6 +32,12 @@
 #include <wx/choice.h>
 #include <wx/filedlg.h>
 #include <wx/display.h>
+#include <wx/zipstrm.h>
+#include <wx/wfstream.h>
+#include <wx/mstream.h>
+#include <wx/dir.h>
+#include <wx/filename.h>
+#include <wx/datetime.h>
 
 static RollingBackgroundStage *FindRolling()
 {
@@ -354,6 +360,20 @@ NoiseConfigPanel::NoiseConfigPanel(wxWindow *parent)
     dzBox->Add(dzBtns, 0, wxALL | wxEXPAND, 6);
 
     top->Add(dzBox, 0, wxALL | wxEXPAND, 8);
+
+    // ----- Diagnostics bundle export -----
+    wxBoxSizer *diagRow = new wxBoxSizer(wxHORIZONTAL);
+    wxButton *diagBtn = new wxButton(this, wxID_ANY,
+                                     _("Export diagnostics bundle..."));
+    diagBtn->SetToolTip(_("Collects the rolling-background model, "
+                          "dead-zone mask, current pipeline configuration "
+                          "and a tail of the debug log into a single zip "
+                          "file suitable for sharing with a developer or "
+                          "feeding to an LLM for analysis."));
+    diagBtn->Bind(wxEVT_BUTTON, &NoiseConfigPanel::OnExportDiagBundle, this);
+    diagRow->Add(diagBtn, 0, wxRIGHT, 8);
+    diagRow->AddStretchSpacer();
+    top->Add(diagRow, 0, wxALL | wxEXPAND, 8);
 
     // Info blurb for future stages / auto-tune hook
     wxStaticText *info = new wxStaticText(this, wxID_ANY,
@@ -809,4 +829,307 @@ void NoiseConfigPanel::UpdateStatus()
         txt = wxString::Format(_("Model: %d x %d, %d frames observed"),
                                sz.GetWidth(), sz.GetHeight(), fc);
     m_status->SetLabel(txt);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics bundle export
+// ---------------------------------------------------------------------------
+//
+// Builds a single zip archive containing everything needed to reason
+// about the noise pipeline's current behaviour:
+//
+//   noise_diag.txt           - human-readable summary of camera, sensor
+//                              and per-stage configuration / stats.
+//   rolling_bg_model.fit     - copy of the persisted EMA model (if any).
+//   dead_zone_mask.fit       - copy of the persisted mask (if any).
+//   dead_zone_mask.png       - rendered RGB visualisation of the mask.
+//   phd2_debug_tail.log      - last 200 KB of the current debug log.
+//
+// Designed for "share this with a developer / feed to an LLM" workflows.
+//
+namespace
+{
+
+// Append a buffer as a zip entry.
+static bool ZipAddBuffer(wxZipOutputStream& zip, const wxString& name,
+                         const void *data, size_t len, const wxDateTime& dt)
+{
+    if (!zip.PutNextEntry(name, dt))
+        return false;
+    if (len > 0)
+        zip.Write(data, len);
+    return zip.LastWrite() == len;
+}
+
+// Append an existing on-disk file as a zip entry. Silently skipped when
+// the file is missing (the bundle is best-effort).
+static bool ZipAddFile(wxZipOutputStream& zip, const wxString& diskPath,
+                       const wxString& entryName)
+{
+    if (diskPath.empty() || !wxFileExists(diskPath))
+        return false;
+    wxFFileInputStream in(diskPath);
+    if (!in.IsOk())
+        return false;
+    wxDateTime mtime;
+    {
+        wxFileName fn(diskPath);
+        fn.GetTimes(nullptr, &mtime, nullptr);
+    }
+    if (!zip.PutNextEntry(entryName, mtime.IsValid() ? mtime : wxDateTime::Now()))
+        return false;
+    zip.Write(in);
+    return zip.IsOk();
+}
+
+// Append a tail (last `tailBytes` bytes) of a file as a zip entry.
+static bool ZipAddFileTail(wxZipOutputStream& zip, const wxString& diskPath,
+                           const wxString& entryName, wxFileOffset tailBytes)
+{
+    if (diskPath.empty() || !wxFileExists(diskPath))
+        return false;
+    wxFFileInputStream in(diskPath);
+    if (!in.IsOk())
+        return false;
+    const wxFileOffset total = in.GetLength();
+    if (total > tailBytes)
+        in.SeekI(total - tailBytes);
+    wxDateTime mtime;
+    {
+        wxFileName fn(diskPath);
+        fn.GetTimes(nullptr, &mtime, nullptr);
+    }
+    if (!zip.PutNextEntry(entryName, mtime.IsValid() ? mtime : wxDateTime::Now()))
+        return false;
+    zip.Write(in);
+    return zip.IsOk();
+}
+
+// Locate the most recently modified PHD2 debug log in the log directory.
+// Returns empty when none found.
+static wxString FindLatestDebugLog()
+{
+    const wxString dir = Debug.GetLogDir();
+    if (dir.empty() || !wxDirExists(dir))
+        return wxString();
+
+    wxArrayString files;
+    wxDir::GetAllFiles(dir, &files, wxT("PHD2_DebugLog*.txt"), wxDIR_FILES);
+
+    wxString best;
+    wxDateTime bestMtime;
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        wxFileName fn(files[i]);
+        wxDateTime mt;
+        if (!fn.GetTimes(nullptr, &mt, nullptr))
+            continue;
+        if (best.empty() || mt.IsLaterThan(bestMtime))
+        {
+            best = files[i];
+            bestMtime = mt;
+        }
+    }
+    return best;
+}
+
+static wxString FormatYesNo(bool v)
+{
+    return v ? wxT("yes") : wxT("no");
+}
+
+static wxString BuildDiagText(const wxString& camTag)
+{
+    wxString out;
+    out.reserve(8192);
+
+    out += wxT("PHD2 noise pipeline diagnostics bundle\n");
+    out += wxT("=======================================\n\n");
+    out += wxString::Format(wxT("Generated: %s\n"),
+                            wxDateTime::Now().FormatISOCombined(' '));
+    out += wxString::Format(wxT("PHD2 version: %s\n"), wxString(FULLVER));
+    out += wxT("\n");
+
+    // Camera
+    out += wxT("[Camera]\n");
+    if (pCamera)
+    {
+        out += wxString::Format(wxT("Name:        %s\n"), pCamera->Name);
+        out += wxString::Format(wxT("Connected:   %s\n"),
+                                FormatYesNo(pCamera->Connected));
+        out += wxString::Format(wxT("HardwareId:  %s\n"),
+                                pCamera->GetHardwareId());
+        out += wxString::Format(wxT("CameraTag:   %s\n"), camTag);
+        out += wxString::Format(wxT("FrameSize:   %d x %d\n"),
+                                pCamera->FrameSize.GetWidth(),
+                                pCamera->FrameSize.GetHeight());
+        out += wxString::Format(wxT("HwBinning:   %d\n"), (int) pCamera->HwBinning);
+        out += wxString::Format(wxT("Gain:        %d\n"), pCamera->GuideCameraGain);
+        out += wxString::Format(wxT("Sensor:      %s\n"),
+                                pCamera->GetSelectedSensorName());
+    }
+    else
+    {
+        out += wxT("(no camera object)\n");
+    }
+    out += wxT("\n");
+
+    // Pipeline
+    out += wxT("[Pipeline]\n");
+    if (!pNoise)
+    {
+        out += wxT("(noise pipeline not initialised)\n\n");
+        return out;
+    }
+    out += wxString::Format(wxT("Stage count: %zu\n\n"), pNoise->StageCount());
+
+    for (size_t i = 0; i < pNoise->StageCount(); ++i)
+    {
+        NoiseReductionStage *st = pNoise->GetStage(i);
+        if (!st)
+            continue;
+        out += wxString::Format(wxT("Stage %zu: %s (enabled=%s)\n"),
+                                i, st->Name(),
+                                FormatYesNo(st->IsEnabled()));
+
+        if (RollingBackgroundStage *r = dynamic_cast<RollingBackgroundStage *>(st))
+        {
+            const wxSize sz = r->ModelSize();
+            out += wxString::Format(wxT("  alpha=%.4f outlierSigma=%.2f maskRadius=%d\n"),
+                                    r->GetAlpha(), r->GetOutlierSigma(),
+                                    r->GetMaskRadius());
+            out += wxString::Format(wxT("  minSamples=%d skipInitial=%d warmup=%d\n"),
+                                    r->GetMinSamples(),
+                                    r->GetSkipInitialFrames(),
+                                    r->GetWarmupSamples());
+            out += wxString::Format(wxT("  starQuantile=%.3f floorAtZero=%s persistModel=%s\n"),
+                                    r->GetStarQuantile(),
+                                    FormatYesNo(r->GetFloorAtZero()),
+                                    FormatYesNo(r->GetPersistModel()));
+            out += wxString::Format(wxT("  diagnostics=%s\n"),
+                                    FormatYesNo(r->GetDiagnostics()));
+            out += wxString::Format(wxT("  modelSize=%d x %d frameCount=%d\n"),
+                                    sz.GetWidth(), sz.GetHeight(),
+                                    r->FrameCount());
+        }
+        else if (HotPixelStage *h = dynamic_cast<HotPixelStage *>(st))
+        {
+            out += wxString::Format(wxT("  ratio=%.2f absOffset=%d maxReplacements=%d\n"),
+                                    h->GetRatio(), h->GetAbsOffset(),
+                                    h->GetMaxReplacements());
+            out += wxString::Format(wxT("  diagnostics=%s\n"),
+                                    FormatYesNo(h->GetDiagnostics()));
+        }
+        else if (NoiseStageDeadZone *d = dynamic_cast<NoiseStageDeadZone *>(st))
+        {
+            const DeadZoneStats s = d->CurrentStats();
+            out += wxString::Format(wxT("  fillWithMedian=%s diagnostics=%s\n"),
+                                    FormatYesNo(d->GetFillWithMedian()),
+                                    FormatYesNo(d->GetDiagnostics()));
+            out += wxString::Format(wxT("  mask: %zu px in %zu regions (%d x %d)\n"),
+                                    s.maskedPixels, s.regionCount,
+                                    s.width, s.height);
+            out += wxString::Format(wxT("  mapPath: %s\n"),
+                                    NoiseStageDeadZone::CurrentMapPath());
+        }
+        out += wxT("\n");
+    }
+
+    return out;
+}
+
+} // namespace
+
+void NoiseConfigPanel::OnExportDiagBundle(wxCommandEvent& /*evt*/)
+{
+    const wxString camTag = pCamera ? RollingBackgroundStage::CurrentCameraTag()
+                                    : wxString();
+    const wxString stamp =
+        wxDateTime::Now().Format(wxT("%Y%m%dT%H%M%S"));
+    wxString defaultName = wxT("phd2_noise_diag_");
+    if (!camTag.empty())
+        defaultName += camTag + wxT("_");
+    defaultName += stamp + wxT(".zip");
+
+    wxFileDialog fd(this, _("Save noise diagnostics bundle"),
+                    wxEmptyString, defaultName,
+                    _("Zip archive (*.zip)|*.zip"),
+                    wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (fd.ShowModal() != wxID_OK)
+        return;
+
+    const wxString outPath = fd.GetPath();
+
+    wxFFileOutputStream out(outPath);
+    if (!out.IsOk())
+    {
+        wxMessageBox(wxString::Format(_("Could not open %s for writing."),
+                                      outPath),
+                     _("Export failed"), wxICON_ERROR, this);
+        return;
+    }
+    wxZipOutputStream zip(out);
+
+    const wxDateTime now = wxDateTime::Now();
+
+    // 1. noise_diag.txt
+    {
+        const wxString text = BuildDiagText(camTag);
+        const wxScopedCharBuffer utf8 = text.utf8_str();
+        ZipAddBuffer(zip, wxT("noise_diag.txt"),
+                     utf8.data(), utf8.length(), now);
+    }
+
+    // 2. Rolling background model (if persisted)
+    if (!camTag.empty())
+    {
+        const wxString rbgPath =
+            RollingBackgroundStage::ModelFilePath(camTag);
+        ZipAddFile(zip, rbgPath, wxT("rolling_bg_model.fit"));
+    }
+
+    // 3. Dead-zone mask FITS + rendered PNG (if persisted)
+    if (!camTag.empty())
+    {
+        const wxString dzPath = DeadZoneMap::MapFilePath(camTag);
+        ZipAddFile(zip, dzPath, wxT("dead_zone_mask.fit"));
+
+        DeadZoneMap m;
+        if (m.LoadFromDisk(camTag))
+        {
+            wxImage img = m.RenderRGB();
+            if (img.IsOk())
+            {
+                wxMemoryOutputStream pngBuf;
+                if (img.SaveFile(pngBuf, wxBITMAP_TYPE_PNG))
+                {
+                    const size_t n = pngBuf.GetSize();
+                    std::vector<unsigned char> raw(n);
+                    pngBuf.CopyTo(raw.data(), n);
+                    ZipAddBuffer(zip, wxT("dead_zone_mask.png"),
+                                 raw.data(), n, now);
+                }
+            }
+        }
+    }
+
+    // 4. Tail of debug log (last ~200 KB)
+    const wxString debugLog = FindLatestDebugLog();
+    if (!debugLog.empty())
+    {
+        ZipAddFileTail(zip, debugLog, wxT("phd2_debug_tail.log"),
+                       200 * 1024);
+    }
+
+    if (!zip.Close() || !out.Close())
+    {
+        wxMessageBox(_("Failed to finalize the zip archive."),
+                     _("Export failed"), wxICON_ERROR, this);
+        return;
+    }
+
+    wxMessageBox(wxString::Format(
+                     _("Diagnostics bundle written to:\n\n%s"),
+                     outPath),
+                 _("Export complete"), wxICON_INFORMATION, this);
 }

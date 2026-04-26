@@ -60,6 +60,7 @@ class NoiseConfigPanel : public wxPanel
     void OnDzBuild(wxCommandEvent& evt);
     void OnDzClear(wxCommandEvent& evt);
     void OnDzView(wxCommandEvent& evt);
+    void OnExportDiagBundle(wxCommandEvent& evt);
     void UpdateDzStatus();
 
     void OnReset(wxCommandEvent& evt);
