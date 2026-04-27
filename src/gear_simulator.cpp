@@ -41,8 +41,11 @@
 # include "camera.h"
 # include "gear_simulator.h"
 # include "image_math.h"
+# include "sim_skycatalog.h"
 
 # include <wx/dir.h>
+# include <wx/dirdlg.h>
+# include <wx/filename.h>
 # include <wx/gdicmn.h>
 # include <wx/stopwatch.h>
 # include <wx/radiobut.h>
@@ -86,6 +89,13 @@ struct SimCamParams
     static double comet_rate_y;
     static bool allow_async_st4;
     static unsigned int frame_download_ms;
+
+    // Real-sky catalog mode (Linux: queries an astrometry.net index).
+    static bool     use_sky_catalog;
+    static double   sim_ra_deg;        // J2000 pointing
+    static double   sim_dec_deg;
+    static wxString sim_index_path;    // file or directory of index-*.fits
+    static double   sim_mag_limit;     // faintest magnitude to render
 };
 
 unsigned int SimCamParams::width = 752; // simulated camera image width
@@ -116,9 +126,14 @@ double SimCamParams::comet_rate_x;
 double SimCamParams::comet_rate_y;
 bool SimCamParams::allow_async_st4 = true;
 unsigned int SimCamParams::frame_download_ms; // frame download time, ms
+bool     SimCamParams::use_sky_catalog;
+double   SimCamParams::sim_ra_deg;
+double   SimCamParams::sim_dec_deg;
+wxString SimCamParams::sim_index_path;
+double   SimCamParams::sim_mag_limit;
 
 // Note: these are all in units appropriate for the UI
-# define NR_STARS_DEFAULT 20
+# define NR_STARS_DEFAULT 60
 # define NR_HOT_PIXELS_DEFAULT 8
 # define NOISE_DEFAULT 2.0
 # define NOISE_MAX 5.0
@@ -146,6 +161,13 @@ unsigned int SimCamParams::frame_download_ms; // frame download time, ms
 # define COMET_RATE_X_DEFAULT 555.0 // pixels per hour
 # define COMET_RATE_Y_DEFAULT -123.4 // pixels per hour
 # define SIM_FILE_DISPLACEMENTS_DEFAULT "star_displacements.csv"
+# define USE_SKY_CATALOG_DEFAULT false
+# define SIM_RA_DEFAULT  83.633   // M42, the Orion Nebula
+# define SIM_DEC_DEFAULT -5.391
+# define SIM_INDEX_PATH_DEFAULT "/usr/share/astrometry"
+# define SIM_MAG_LIMIT_DEFAULT 12.0
+# define SIM_MAG_LIMIT_MIN  4.0
+# define SIM_MAG_LIMIT_MAX 16.0
 
 // Needed to handle legacy registry values that may no longer be in correct units or range
 static double range_check(double thisval, double minval, double maxval)
@@ -189,6 +211,18 @@ static void load_sim_params()
     SimCamParams::comet_rate_y = pConfig->Profile.GetDouble("/SimCam/comet_rate_y", COMET_RATE_Y_DEFAULT);
 
     SimCamParams::frame_download_ms = pConfig->Profile.GetInt("/SimCam/frame_download_ms", 50);
+
+    SimCamParams::use_sky_catalog =
+        pConfig->Profile.GetBoolean("/SimCam/use_sky_catalog", USE_SKY_CATALOG_DEFAULT);
+    SimCamParams::sim_ra_deg =
+        pConfig->Profile.GetDouble("/SimCam/sim_ra_deg",  SIM_RA_DEFAULT);
+    SimCamParams::sim_dec_deg =
+        pConfig->Profile.GetDouble("/SimCam/sim_dec_deg", SIM_DEC_DEFAULT);
+    SimCamParams::sim_index_path =
+        pConfig->Profile.GetString("/SimCam/sim_index_path", SIM_INDEX_PATH_DEFAULT);
+    SimCamParams::sim_mag_limit = range_check(
+        pConfig->Profile.GetDouble("/SimCam/sim_mag_limit", SIM_MAG_LIMIT_DEFAULT),
+        SIM_MAG_LIMIT_MIN, SIM_MAG_LIMIT_MAX);
 }
 
 static void save_sim_params()
@@ -214,6 +248,12 @@ static void save_sim_params()
     pConfig->Profile.SetDouble("/SimCam/comet_rate_x", SimCamParams::comet_rate_x);
     pConfig->Profile.SetDouble("/SimCam/comet_rate_y", SimCamParams::comet_rate_y);
     pConfig->Profile.SetInt("/SimCam/frame_download_ms", SimCamParams::frame_download_ms);
+
+    pConfig->Profile.SetBoolean("/SimCam/use_sky_catalog", SimCamParams::use_sky_catalog);
+    pConfig->Profile.SetDouble("/SimCam/sim_ra_deg",   SimCamParams::sim_ra_deg);
+    pConfig->Profile.SetDouble("/SimCam/sim_dec_deg",  SimCamParams::sim_dec_deg);
+    pConfig->Profile.SetString("/SimCam/sim_index_path", SimCamParams::sim_index_path);
+    pConfig->Profile.SetDouble("/SimCam/sim_mag_limit", SimCamParams::sim_mag_limit);
 }
 
 # ifdef STEPGUIDER_SIMULATOR
@@ -577,22 +617,100 @@ void SimCamState::Initialize()
 {
     width = SimCamParams::width;
     height = SimCamParams::height;
+    unsigned int const border = SimCamParams::border;
+
+    // Optional path: pull real stars from an astrometry.net star kdtree
+    // index. When this succeeds the synthetic generator below is skipped.
+    // Positions come from a TAN forward projection of catalog (RA, Dec)
+    // through a WCS centered at SimCamParams::sim_ra_deg / sim_dec_deg
+    // at the configured pixel scale and camera angle, and intensities
+    // are calibrated from catalog magnitude using the same
+    // 0.1 * 10^(0.4*(m_faint - m)) anchor used by the synthetic path
+    // (m_faint = the user-set magnitude limit).
+    bool fromCatalog = false;
+    if (SimCamParams::use_sky_catalog)
+    {
+        std::vector<SimSkyPixelStar> sky;
+        if (BuildSimSkyField(SimCamParams::sim_index_path,
+                             SimCamParams::sim_ra_deg, SimCamParams::sim_dec_deg,
+                             (int) width, (int) height,
+                             SimCamParams::image_scale,
+                             SimCamParams::cam_angle,
+                             SimCamParams::sim_mag_limit,
+                             (int) border,
+                             sky))
+        {
+            stars.resize(sky.size());
+            const double magLim = SimCamParams::sim_mag_limit;
+            for (size_t i = 0; i < sky.size(); ++i)
+            {
+                // BuildSimSkyField returns 0-based pixel coords; the
+                // simulator uses center-origin coords so we shift by
+                // half-frame here.
+                stars[i].pos.x = sky[i].pixel_x - 0.5 * width;
+                stars[i].pos.y = sky[i].pixel_y - 0.5 * height;
+
+                float mag = sky[i].vmag;
+                if (!std::isfinite(mag))
+                    mag = (float) magLim; // unknown -> faintest
+                double inten = 0.1 * pow(10.0, 0.4 * (magLim - mag));
+                stars[i].inten = inten;
+            }
+            Debug.AddLine(wxString::Format("SimCam: loaded %u stars from sky catalog at (%.4f, %.4f)",
+                                           (unsigned) sky.size(), SimCamParams::sim_ra_deg, SimCamParams::sim_dec_deg));
+            fromCatalog = true;
+        }
+        else
+        {
+            Debug.AddLine("SimCam: sky catalog query failed; falling back to synthetic field");
+        }
+    }
+
+    if (!fromCatalog)
+    {
     // generate stars at random positions but no closer than 12 pixels from any edge
     unsigned int const nr_stars = SimCamParams::nr_stars;
     stars.resize(nr_stars);
-    unsigned int const border = SimCamParams::border;
 
+    // Generate a representative star field.
+    //
+    // Real sky fields obey the Hubble-style power law: cumulative star
+    // count brighter than magnitude m grows as N(<m) proportional to
+    // 10^(0.6 m), i.e. each magnitude step adds ~4x more stars than
+    // the previous one. The previous synthetic distribution
+    // (uniform-r cubed) clustered too tightly around mid-bright values
+    // and produced almost no faint background, which is why simulated
+    // frames looked like a uniformly-peppered grid rather than a real
+    // field with a few obvious guide candidates and a rich faint
+    // background.
+    //
+    // We inverse-CDF sample magnitudes in [m_bright, m_faint], then
+    // convert to relative flux via 10^(-0.4 m). m_faint is set so the
+    // dimmest stars sit just above the noise floor at default noise
+    // settings; m_bright is chosen so the brightest non-anchor star
+    // is a clearly resolved guidable target.
     srand(2); // always generate the same stars
+    const double m_bright = 5.0;
+    const double m_faint = 12.0;
+    const double mag_range = pow(10.0, 0.6 * (m_faint - m_bright)) - 1.0;
+
     for (unsigned int i = 0; i < nr_stars; i++)
     {
         // generate stars in ra/dec coordinates
         stars[i].pos.x = (double) (rand() % (width - 2 * border)) - 0.5 * width;
         stars[i].pos.y = (double) (rand() % (height - 2 * border)) - 0.5 * height;
-        double r = (double) (rand() % 90) / 3.0; // 0..30
+
+        // Inverse-CDF sample of magnitude from the power law:
+        //   u uniform in (0,1] -> m = m_bright + log10(1 + u*range)/0.6
+        double u = (double) (rand() % 10000 + 1) / 10000.0;
+        double mag = m_bright + log10(1.0 + u * mag_range) / 0.6;
+        // Flux relative to faintest detectable star (anchored at 0.1).
+        double inten = 0.1 * pow(10.0, 0.4 * (m_faint - mag));
+
         if (i == 10)
             stars[i].inten = 30.1; // Always have one saturated star
         else
-            stars[i].inten = 0.1 + (double) (r * r * r) / 9000.0;
+            stars[i].inten = inten;
 
         // force a couple stars to be close together. This is a useful test for Star::AutoFind
         if (i == 3)
@@ -602,6 +720,7 @@ void SimCamState::Initialize()
             stars[i].inten = stars[i - 1].inten;
         }
     }
+    } // end if (!fromCatalog)
 
     // generate hot pixels
     unsigned int const nr_hot = SimCamParams::nr_hot_pixels;
@@ -1730,6 +1849,15 @@ struct SimCamDialog : public wxDialog
     wxButton *pPierFlip;
     wxButton *pResetBtn;
 
+    // Sky-catalog group (Linux-only behaviour, but UI is always shown
+    // and silently no-ops on non-Linux).
+    wxCheckBox *pUseSkyCatCbx;
+    wxSpinCtrlDouble *pSimRaSpin;
+    wxSpinCtrlDouble *pSimDecSpin;
+    wxSlider *pSimMagLimitSlider;
+    wxTextCtrl *pSimIndexPathCtrl;
+    wxButton *pSimIndexBrowseBtn;
+
     SimCamDialog(wxWindow *parent);
     ~SimCamDialog() { }
     void OnReset(wxCommandEvent& event);
@@ -1738,6 +1866,7 @@ struct SimCamDialog : public wxDialog
     void OnRbDefaultPE(wxCommandEvent& evt);
     void OnRbCustomPE(wxCommandEvent& evt);
     void OnOkClick(wxCommandEvent& evt);
+    void OnBrowseIndex(wxCommandEvent& evt);
 
     wxDECLARE_EVENT_TABLE();
 };
@@ -1876,7 +2005,7 @@ SimCamDialog::SimCamDialog(wxWindow *parent) : wxDialog(parent, wxID_ANY, _("Cam
     // Camera group controls
     wxStaticBoxSizer *pCamGroup = new wxStaticBoxSizer(wxVERTICAL, this, _("Camera"));
     wxFlexGridSizer *pCamTable = new wxFlexGridSizer(1, 6, 15, 15);
-    pStarsSlider = NewSlider(this, SimCamParams::nr_stars, 1, 100, _("Number of simulated stars"));
+    pStarsSlider = NewSlider(this, SimCamParams::nr_stars, 1, 500, _("Number of simulated stars"));
     AddTableEntryPair(this, pCamTable, _("Stars"), pStarsSlider);
     pHotpxSlider = NewSlider(this, SimCamParams::nr_hot_pixels, 0, 50, _("Number of hot pixels"));
     AddTableEntryPair(this, pCamTable, _("Hot pixels"), pHotpxSlider);
@@ -1884,6 +2013,45 @@ SimCamDialog::SimCamDialog(wxWindow *parent) : wxDialog(parent, wxID_ANY, _("Cam
                              /* xgettext:no-c-format */ _("% Simulated noise"));
     AddTableEntryPair(this, pCamTable, _("Noise"), pNoiseSlider);
     pCamGroup->Add(pCamTable);
+
+    // Sky-catalog sub-group: when enabled, BuildSimSkyField queries an
+    // astrometry.net star kdtree near (RA, Dec) and projects in-frame
+    // catalog stars through a TAN WCS at SimCamParams::image_scale and
+    // cam_angle. The magnitude slider both limits which stars are kept
+    // and serves as the flux anchor (faintest mag -> ~0.1 relative).
+    // Path may be a single index-*.fits file or a directory of them.
+    wxStaticBoxSizer *pSkyGroup = new wxStaticBoxSizer(wxVERTICAL, this, _("Sky catalog (Linux)"));
+    pUseSkyCatCbx = NewCheckBox(this, SimCamParams::use_sky_catalog, _("Use real sky catalog"),
+                                _("Replace synthetic stars with real catalog stars projected at the configured RA/Dec"));
+    pSkyGroup->Add(pUseSkyCatCbx, wxSizerFlags().Border(wxALL, 5));
+
+    wxFlexGridSizer *pSkyTable = new wxFlexGridSizer(2, 4, 5, 10);
+    pSimRaSpin = NewSpinner(this, SimCamParams::sim_ra_deg, 0.0, 360.0, 0.001,
+                            _("Field-center Right Ascension, J2000 degrees"));
+    pSimRaSpin->SetDigits(4);
+    AddTableEntryPair(this, pSkyTable, _("RA (deg)"), pSimRaSpin);
+    pSimDecSpin = NewSpinner(this, SimCamParams::sim_dec_deg, -90.0, 90.0, 0.001,
+                             _("Field-center Declination, J2000 degrees"));
+    pSimDecSpin->SetDigits(4);
+    AddTableEntryPair(this, pSkyTable, _("Dec (deg)"), pSimDecSpin);
+    pSimMagLimitSlider = NewSlider(this, (int) floor(SimCamParams::sim_mag_limit),
+                                   (int) SIM_MAG_LIMIT_MIN, (int) SIM_MAG_LIMIT_MAX,
+                                   _("Faintest catalog magnitude included; also anchors flux scale"));
+    AddTableEntryPair(this, pSkyTable, _("Mag limit"), pSimMagLimitSlider);
+
+    wxBoxSizer *pPathSizer = new wxBoxSizer(wxHORIZONTAL);
+    pSimIndexPathCtrl = new wxTextCtrl(this, wxID_ANY, SimCamParams::sim_index_path);
+    pSimIndexPathCtrl->SetToolTip(_("Path to a .fits index file or a directory containing index-*.fits"));
+    pSimIndexBrowseBtn = new wxButton(this, wxID_ANY, _("Browse..."));
+    pSimIndexBrowseBtn->Bind(wxEVT_COMMAND_BUTTON_CLICKED, &SimCamDialog::OnBrowseIndex, this);
+    pPathSizer->Add(pSimIndexPathCtrl, wxSizerFlags(1).Expand());
+    pPathSizer->Add(pSimIndexBrowseBtn, wxSizerFlags().Border(wxLEFT, 5));
+    wxStaticText *pPathLabel = new wxStaticText(this, wxID_ANY, _("Index path: "));
+    pSkyTable->Add(pPathLabel, 1, wxALL, 5);
+    pSkyTable->Add(pPathSizer, 1, wxALL | wxEXPAND, 5);
+
+    pSkyGroup->Add(pSkyTable);
+    pCamGroup->Add(pSkyGroup, wxSizerFlags().Border(wxTOP, 5).Expand());
 
     // Mount group controls
     wxStaticBoxSizer *pMountGroup = new wxStaticBoxSizer(wxVERTICAL, this, _("Mount"));
@@ -2013,6 +2181,24 @@ void SimCamDialog::OnReset(wxCommandEvent& event)
     SetRBState(this, USE_PE_DEFAULT_PARAMS);
     UpdatePierSideLabel();
     showComet->SetValue(SHOW_COMET_DEFAULT);
+
+    pUseSkyCatCbx->SetValue(USE_SKY_CATALOG_DEFAULT);
+    pSimRaSpin->SetValue(SIM_RA_DEFAULT);
+    pSimDecSpin->SetValue(SIM_DEC_DEFAULT);
+    pSimMagLimitSlider->SetValue((int) SIM_MAG_LIMIT_DEFAULT);
+    pSimIndexPathCtrl->SetValue(SIM_INDEX_PATH_DEFAULT);
+}
+
+void SimCamDialog::OnBrowseIndex(wxCommandEvent& evt)
+{
+    // Offer a directory chooser by default; users with a single
+    // index file can paste/edit the text control directly.
+    wxString cur = pSimIndexPathCtrl->GetValue();
+    wxString start = wxFileName::DirExists(cur) ? cur :
+                     (wxFileName::FileExists(cur) ? wxFileName(cur).GetPath() : wxString(SIM_INDEX_PATH_DEFAULT));
+    wxDirDialog dlg(this, _("Select astrometry index directory"), start);
+    if (dlg.ShowModal() == wxID_OK)
+        pSimIndexPathCtrl->SetValue(dlg.GetPath());
 }
 
 void SimCamDialog::OnPierFlip(wxCommandEvent& event)
@@ -2082,6 +2268,15 @@ void CameraSimulator::ShowPropertyDialog()
         SimCamParams::reverse_dec_pulse_on_west_side = dlg.pReverseDecPulseCbx->GetValue();
         SimCamParams::show_comet = dlg.showComet->GetValue();
         SimCamParams::clouds_opacity = dlg.pCloudSlider->GetValue() / 100.0;
+
+        // Sky-catalog parameters: Update() so that toggling any of them
+        // forces sim.Initialize() below and the new field is generated.
+        upd.Update(SimCamParams::use_sky_catalog, dlg.pUseSkyCatCbx->GetValue());
+        upd.Update(SimCamParams::sim_ra_deg, dlg.pSimRaSpin->GetValue());
+        upd.Update(SimCamParams::sim_dec_deg, dlg.pSimDecSpin->GetValue());
+        upd.Update(SimCamParams::sim_mag_limit, (double) dlg.pSimMagLimitSlider->GetValue());
+        upd.Update(SimCamParams::sim_index_path, dlg.pSimIndexPathCtrl->GetValue());
+
         save_sim_params();
 
         if (upd.WasModified())

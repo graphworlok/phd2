@@ -498,6 +498,8 @@ set(phd2_SRC
   ${phd_src_dir}/star.h
   ${phd_src_dir}/star_catalog.cpp
   ${phd_src_dir}/star_catalog.h
+  ${phd_src_dir}/sim_skycatalog.cpp
+  ${phd_src_dir}/sim_skycatalog.h
   ${phd_src_dir}/star_profile.cpp
   ${phd_src_dir}/star_profile.h
   ${phd_src_dir}/target.cpp
