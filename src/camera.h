@@ -35,6 +35,8 @@
 #ifndef CAMERA_H_INCLUDED
 #define CAMERA_H_INCLUDED
 
+#include <vector>
+
 typedef std::map<int, usImage *> ExposureImgMap; // map exposure to image
 class DefectMap;
 
@@ -124,6 +126,21 @@ struct CaptureParams
 // mapping from combined binning to (hwBinning, swBinning) pair
 typedef std::map<int, std::pair<int, int>> BinningChoices;
 
+// fps<->exposure calibration loaded from a cam_characterise.py output file.
+// Anchors are sorted by fps ascending (low fps = long integration = high exposure).
+struct FpsExposureCalib {
+    bool valid;
+    double fps_max_bandwidth;             // fps ceiling set by USB/pipeline bandwidth
+    double integration_limited_below_fps; // below this fps, frame period = integration time
+    std::vector<double> anchors_fps;      // fps anchor points, ascending
+    std::vector<int>    anchors_exp_units;// paired exposure in UVC 100µs units (descending)
+    double valid_fps_min;
+    double valid_fps_max;
+    FpsExposureCalib()
+        : valid(false), fps_max_bandwidth(0.0), integration_limited_below_fps(0.0),
+          valid_fps_min(0.0), valid_fps_max(0.0) {}
+};
+
 class GuideCamera : public wxMessageBoxProxy, public OnboardST4
 {
     friend class CameraConfigDialogPane;
@@ -175,6 +192,8 @@ public:
     usImage *CurrentDarkFrame;
     ExposureImgMap Darks; // map exposure => dark frame
     DefectMap *CurrentDefectMap;
+
+    FpsExposureCalib m_fpsCalib; // optional cam_characterise.py fps<->exposure calibration
 
     static wxArrayString GuideCameraList();
     static GuideCamera *Factory(const wxString& choice);
@@ -246,6 +265,14 @@ public:
 
     void SubtractDark(usImage& img);
     void GetDarkLibraryProperties(int *pNumDarks, double *pMinExp, double *pMaxExp);
+
+    // Load a cam_characterise.py fps<->exposure calibration JSON from path.
+    // Called automatically from ConnectCamera() if a matching file is present.
+    bool LoadFpsCalibration(const wxString& path);
+    bool HasFpsCalibration() const { return m_fpsCalib.valid; }
+    // Estimate exposure in ms from measured fps via calibration. Returns -1 if
+    // fps is in the bandwidth-limited region or no calibration is loaded.
+    int EstimateExposureMs(double fps) const;
 
     virtual wxSize GetFrameSize() const;
     virtual wxSize DarkFrameSize() { return FrameSize; }

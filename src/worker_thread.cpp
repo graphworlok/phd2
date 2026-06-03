@@ -190,9 +190,21 @@ bool WorkerThread::HandleExpose(EXPOSE_REQUEST *req)
                                  params.subframe.x, params.subframe.y, params.subframe.width, params.subframe.height,
                                  params.limitFrame.x, params.limitFrame.y, params.limitFrame.width, params.limitFrame.height));
 
+            wxStopWatch captureTimer;
             if (GuideCamera::Capture(pCamera, *req->pImage, params))
             {
                 throw ERROR_INFO("Capture failed");
+            }
+            long elapsed_ms = captureTimer.Time();
+            // If the camera returned far faster than the requested exposure, integration
+            // is likely synthetic (gain-boost or frame-sum) rather than real.
+            if (elapsed_ms > 0 && params.duration >= 100 &&
+                elapsed_ms < params.duration / 2)
+            {
+                Debug.Write(wxString::Format(
+                    "FpsCalib: short capture: requested=%dms elapsed=%ldms "
+                    "(possible synthetic/gain-boost exposure)\n",
+                    params.duration, elapsed_ms));
             }
         }
         else

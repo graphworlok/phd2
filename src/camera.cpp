@@ -39,6 +39,7 @@
 #include "camera.h"
 #include "gear_simulator.h"
 
+#include <wx/regex.h>
 #include <wx/stdpaths.h>
 
 static const int DefaultGuideCameraGain = 95;
@@ -654,6 +655,115 @@ GuideCamera *GuideCamera::Factory(const wxString& choice)
     return pReturn;
 }
 
+bool GuideCamera::LoadFpsCalibration(const wxString& path)
+{
+    m_fpsCalib = FpsExposureCalib();
+
+    wxTextFile f;
+    if (!f.Open(path))
+    {
+        Debug.Write(wxString::Format("FpsCalib: cannot open %s\n", path));
+        return false;
+    }
+    wxString text;
+    for (wxString line = f.GetFirstLine(); !f.Eof(); line = f.GetNextLine())
+        text += line + "\n";
+    f.Close();
+
+    wxRegEx re_fps_max("\"fps_max_bandwidth\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_limit("\"integration_limited_below_fps\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_afps("\"anchors_fps\"\\s*:\\s*\\[([^\\]]+)\\]");
+    wxRegEx re_aexp("\"anchors_exposure\"\\s*:\\s*\\[([^\\]]+)\\]");
+
+    double fps_max = 0.0, fps_limit = 0.0;
+    if (!re_fps_max.Matches(text) || !re_fps_max.GetMatch(text, 1).ToDouble(&fps_max) ||
+        !re_limit.Matches(text) || !re_limit.GetMatch(text, 1).ToDouble(&fps_limit))
+    {
+        Debug.Write(wxString::Format("FpsCalib: missing scalar fields in %s\n", path));
+        return false;
+    }
+
+    auto parseDoubles = [](const wxString& s, std::vector<double>& out) {
+        wxStringTokenizer tok(s, ",");
+        while (tok.HasMoreTokens()) {
+            double v;
+            if (tok.GetNextToken().Trim(true).Trim(false).ToDouble(&v))
+                out.push_back(v);
+        }
+        return !out.empty();
+    };
+    auto parseInts = [](const wxString& s, std::vector<int>& out) {
+        wxStringTokenizer tok(s, ",");
+        while (tok.HasMoreTokens()) {
+            long v;
+            if (tok.GetNextToken().Trim(true).Trim(false).ToLong(&v))
+                out.push_back((int)v);
+        }
+        return !out.empty();
+    };
+
+    std::vector<double> anchors_fps;
+    std::vector<int> anchors_exp;
+    if (!re_afps.Matches(text) || !parseDoubles(re_afps.GetMatch(text, 1), anchors_fps) ||
+        !re_aexp.Matches(text) || !parseInts(re_aexp.GetMatch(text, 1), anchors_exp))
+    {
+        Debug.Write(wxString::Format("FpsCalib: missing anchor arrays in %s\n", path));
+        return false;
+    }
+    if (anchors_fps.size() != anchors_exp.size() || anchors_fps.size() < 2)
+    {
+        Debug.Write("FpsCalib: anchor array size mismatch or too few points\n");
+        return false;
+    }
+
+    m_fpsCalib.valid = true;
+    m_fpsCalib.fps_max_bandwidth = fps_max;
+    m_fpsCalib.integration_limited_below_fps = fps_limit;
+    m_fpsCalib.anchors_fps = anchors_fps;
+    m_fpsCalib.anchors_exp_units = anchors_exp;
+    m_fpsCalib.valid_fps_min = anchors_fps.front();
+    m_fpsCalib.valid_fps_max = anchors_fps.back();
+
+    // anchors_exp_units[0] is the longest real integration (low fps anchor)
+    int max_integ_ms = (int)(anchors_exp.front() * 0.1 + 0.5);
+
+    Debug.Write(wxString::Format(
+        "FpsCalib: loaded %s: fps_max=%.1f limit=%.1f %d anchors "
+        "valid=[%.1f..%.1f] max_real_integration=%dms\n",
+        path, fps_max, fps_limit, (int)anchors_fps.size(),
+        anchors_fps.front(), anchors_fps.back(), max_integ_ms));
+    return true;
+}
+
+int GuideCamera::EstimateExposureMs(double fps) const
+{
+    if (!m_fpsCalib.valid)
+        return -1;
+    if (fps >= m_fpsCalib.integration_limited_below_fps)
+        return -1; // bandwidth-limited region: fps carries no exposure information
+
+    const std::vector<double>& af = m_fpsCalib.anchors_fps;
+    const std::vector<int>&    ae = m_fpsCalib.anchors_exp_units;
+
+    // Clamp to calibrated range edges
+    if (fps <= af.front())
+        return (int)(ae.front() * 0.1 + 0.5);
+    if (fps >= af.back())
+        return (int)(ae.back() * 0.1 + 0.5);
+
+    // Linear interpolation between anchor pair
+    for (size_t i = 1; i < af.size(); i++)
+    {
+        if (fps <= af[i])
+        {
+            double t = (fps - af[i - 1]) / (af[i] - af[i - 1]);
+            double exp_units = ae[i - 1] + t * (ae[i] - ae[i - 1]);
+            return (int)(exp_units * 0.1 + 0.5); // 100µs units -> ms
+        }
+    }
+    return -1;
+}
+
 // ConnectCamera is the one place where we call camera->Connect(). Any work done here
 // applies to all camera types, regardless of how the various camera sub-ckasses
 // implement Connect().
@@ -668,6 +778,15 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
         auto binning = camera->GetBinning();
         camera->LoadLimitFrame(binning);
     }
+    // Auto-load a cam_characterise.py fps<->exposure calibration if one exists for
+    // this camera's frame size. Place calib_WxH.json in the PHD2 data directory.
+    wxString calPath = MyFrame::GetDefaultFileDir() + PATHSEPSTR +
+        wxString::Format("calib_%dx%d.json",
+                         camera->FrameSize.GetWidth(), camera->FrameSize.GetHeight());
+    if (wxFileExists(calPath))
+        camera->LoadFpsCalibration(calPath);
+    else
+        Debug.Write(wxString::Format("FpsCalib: no calibration at %s\n", calPath));
     return err;
 }
 
