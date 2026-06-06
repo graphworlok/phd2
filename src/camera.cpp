@@ -41,6 +41,10 @@
 
 #include <wx/regex.h>
 #include <wx/stdpaths.h>
+#ifdef __linux__
+# include <stdlib.h>  // realpath()
+# include <limits.h>  // PATH_MAX
+#endif
 
 static const int DefaultGuideCameraGain = 95;
 static const int DefaultGuideCameraTimeoutMs = 15000;
@@ -847,6 +851,54 @@ int GuideCamera::EstimateExposureMs(double fps) const
     return -1;
 }
 
+#ifdef __linux__
+// Derive a stable device identifier from sysfs: vid+pid[_serial].
+// Mirrors the usb_device_tag() function in cam_manager.py so that PHD2 and the
+// characterisation tools use the same subdirectory name for calibration files.
+static wxString GetUsbDeviceTag(const wxString& devicePath)
+{
+    wxString name = wxFileName(devicePath).GetFullName(); // "video0"
+    wxString symlinkPath = "/sys/class/video4linux/" + name + "/device";
+
+    char resolved[4096] = {};
+    if (!realpath(symlinkPath.mb_str(), resolved))
+    {
+        Debug.Write(wxString::Format("DevTag: realpath failed for %s\n", symlinkPath));
+        return wxEmptyString;
+    }
+
+    // resolved is the UVC interface dir; its parent is the USB device node
+    wxString usbDev = wxFileName(wxString::FromUTF8(resolved)).GetPath();
+
+    auto readSys = [&](const wxString& file) -> wxString {
+        wxTextFile f;
+        if (!f.Open(usbDev + "/" + file)) return wxEmptyString;
+        wxString v = f.GetFirstLine(); f.Close();
+        return v.Trim(true).Trim(false);
+    };
+
+    wxString vid = readSys("idVendor");
+    wxString pid = readSys("idProduct");
+    wxString sn  = readSys("serial");
+
+    if (vid.IsEmpty() || pid.IsEmpty())
+    {
+        Debug.Write(wxString::Format("DevTag: no idVendor/idProduct under %s\n", usbDev));
+        return wxEmptyString;
+    }
+
+    wxString tag = vid + pid; // e.g. "046d0825"
+    if (!sn.IsEmpty())
+    {
+        for (size_t i = 0; i < sn.size(); i++)
+            if (!wxIsalnum(sn[i]) && sn[i] != '-') sn[i] = '_';
+        tag += "_" + sn;
+    }
+    Debug.Write(wxString::Format("DevTag: %s -> %s\n", devicePath, tag));
+    return tag;
+}
+#endif // __linux__
+
 bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
 {
     m_darkModel = DarkCurrentModel();
@@ -983,20 +1035,29 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
         auto binning = camera->GetBinning();
         camera->LoadLimitFrame(binning);
     }
-    // Auto-load cam_characterise.py artefacts if present in the PHD2 data directory.
-    // Files (all named by frame size):
-    //   calib_WxH.json       fps<->exposure calibration
-    //   dark_model_WxH.json  dark current slope + exposure tag for master dark
-    //   master_WxH.npy       uint16 master dark (requires dark model for exp tag)
-    //   defects_WxH.txt      hot pixel coordinate list for defect map
+    // Auto-load cam_characterise.py artefacts keyed by USB device ID and resolution.
+    // Files live in a subdirectory named after the device (vid+pid[_serial]) so
+    // cameras with the same resolution never share calibration data.
+    // Layout: {PHD2_data_dir}/{dev_tag}/calib_WxH.json  (and master, defects, dark_model)
+    // Falls back to {PHD2_data_dir}/ if the device tag cannot be resolved.
     wxString dataDir = MyFrame::GetDefaultFileDir();
-    wxString tag = wxString::Format("%dx%d",
+
+    wxString devTag;
+#ifdef __linux__
+    if (cameraId.StartsWith("/dev/"))
+        devTag = GetUsbDeviceTag(cameraId);
+#endif
+    wxString devDir = devTag.IsEmpty()
+        ? dataDir
+        : dataDir + PATHSEPSTR + devTag;
+
+    wxString res = wxString::Format("%dx%d",
         camera->FrameSize.GetWidth(), camera->FrameSize.GetHeight());
 
-    wxString calPath      = dataDir + PATHSEPSTR + "calib_"      + tag + ".json";
-    wxString darkModelPath = dataDir + PATHSEPSTR + "dark_model_" + tag + ".json";
-    wxString npyPath      = dataDir + PATHSEPSTR + "master_"     + tag + ".npy";
-    wxString defectsPath  = dataDir + PATHSEPSTR + "defects_"    + tag + ".txt";
+    wxString calPath       = devDir + PATHSEPSTR + "calib_"      + res + ".json";
+    wxString darkModelPath = devDir + PATHSEPSTR + "dark_model_" + res + ".json";
+    wxString npyPath       = devDir + PATHSEPSTR + "master_"     + res + ".npy";
+    wxString defectsPath   = devDir + PATHSEPSTR + "defects_"    + res + ".txt";
 
     if (wxFileExists(calPath))
         camera->LoadFpsCalibration(calPath);
