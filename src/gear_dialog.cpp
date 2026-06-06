@@ -1220,6 +1220,12 @@ bool GearDialog::DoConnectCamera(bool autoReconnecting)
 
         pFrame->StatusMsg(_("Camera Connected"));
 
+        // If cam_characterise.py calibration was loaded at connect, show the
+        // derived exposure guidance in the status bar (advisory, not enforced).
+        const wxString& charNote = pCamera->GetCharacterisationNote();
+        if (!charNote.IsEmpty())
+            pFrame->StatusMsgNoTimeout("Char: " + charNote);
+
         pFrame->UpdateStatusBarStateLabels();
         pFrame->pStatsWin->UpdateCooler();
     }

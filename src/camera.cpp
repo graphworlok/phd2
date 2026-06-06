@@ -919,9 +919,14 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
     wxRegEx re_units("\"exposure_max_units\"\\s*:\\s*([0-9]+)");
     wxRegEx re_ms("\"exposure_max_ms\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
     wxRegEx re_depth("\"pixel_depth\"\\s*:\\s*([0-9]+)");
+    wxRegEx re_r2("\"r2\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_linear("\"linear\"\\s*:\\s*(true|false)");
+    wxRegEx re_verdict("\"exposure_fidelity_verdict\"\\s*:\\s*\"([^\"]+)\"");
 
-    double slope = 0.0, bias = 0.0, exp_ms = 0.0;
+    double slope = 0.0, bias = 0.0, exp_ms = 0.0, r2 = 0.0;
     long exp_units = 0, depth = 8;
+    bool linear = false;
+    wxString verdict;
 
     if (!re_slope.Matches(text) || !re_slope.GetMatch(text, 1).ToDouble(&slope) ||
         !re_bias.Matches(text)  || !re_bias.GetMatch(text, 1).ToDouble(&bias))
@@ -937,6 +942,12 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
         exp_ms = exp_units * 0.1;
     if (re_depth.Matches(text))
         re_depth.GetMatch(text, 1).ToLong(&depth);
+    if (re_r2.Matches(text))
+        re_r2.GetMatch(text, 1).ToDouble(&r2);
+    if (re_linear.Matches(text))
+        linear = (re_linear.GetMatch(text, 1) == "true");
+    if (re_verdict.Matches(text))
+        verdict = re_verdict.GetMatch(text, 1);
 
     if (exp_ms <= 0.0)
     {
@@ -950,10 +961,14 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
     m_darkModel.exposure_max_units = (int)exp_units;
     m_darkModel.exposure_max_ms = exp_ms;
     m_darkModel.pixel_depth = (int)depth;
+    m_darkModel.r2 = r2;
+    m_darkModel.linear = linear;
+    m_darkModel.fidelity_verdict = verdict;
 
     Debug.Write(wxString::Format(
-        "DarkModel: loaded from %s: slope=%.5f bias=%.2f exp_max=%dms pixel_depth=%d\n",
-        path, slope, bias, (int)exp_ms, (int)depth));
+        "DarkModel: loaded from %s: slope=%.5f bias=%.2f exp_max=%dms "
+        "r2=%.3f linear=%s verdict=%s\n",
+        path, slope, bias, (int)exp_ms, r2, linear ? "yes" : "no", verdict));
     return true;
 }
 
@@ -1079,6 +1094,52 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
         camera->ImportDefectList(defectsPath);
     else
         Debug.Write(wxString::Format("DefectMap: no defect list at %s\n", defectsPath));
+
+    // Derive optimal exposure guidance from loaded calibration and store as a
+    // human-readable note. Advisory only — nothing is enforced or changed.
+    camera->m_charNote = wxEmptyString;
+    if (camera->HasFpsCalibration() || camera->HasDarkCurrentModel())
+    {
+        wxString note;
+
+        if (camera->HasFpsCalibration())
+        {
+            const FpsExposureCalib& fc = camera->m_fpsCalib;
+            if (fc.anchors_exp_units.size() >= 2)
+            {
+                // anchors sorted fps-ascending: front = longest integration, back = shortest
+                int min_ms = (int)(fc.anchors_exp_units.back()  * 0.1 + 0.5);
+                int max_ms = (int)(fc.anchors_exp_units.front() * 0.1 + 0.5);
+                note += wxString::Format("real integration %d-%dms", min_ms, max_ms);
+            }
+        }
+
+        if (camera->HasDarkCurrentModel())
+        {
+            const DarkCurrentModel& dm = camera->m_darkModel;
+            if (!dm.fidelity_verdict.IsEmpty())
+            {
+                // Extract the key word: "REAL", "synthetic", "partial"
+                wxString key = dm.fidelity_verdict.Upper().BeforeFirst(' ');
+                if (!note.IsEmpty()) note += ", ";
+                note += "verdict: " + key;
+            }
+            if (dm.r2 > 0.0)
+            {
+                if (!note.IsEmpty()) note += ", ";
+                note += wxString::Format("dark r2=%.3f", dm.r2);
+                if (!dm.linear)
+                    note += " (non-linear)";
+            }
+        }
+
+        camera->m_charNote = note;
+
+        Debug.Write(wxString::Format(
+            "*** Characterisation: %s\n"
+            "*** Suggested guide exposure: within real integration range shown above\n",
+            note));
+    }
 
     return err;
 }
@@ -1771,10 +1832,15 @@ wxString GuideCamera::GetSettingsSummary()
     else
         pixelSizeStr = wxString::Format(_("%0.1f um"), m_pixelSize);
 
-    return wxString::Format("Camera = %s%s, full size = %d x %d, %s, %s, pixel size = %s\n", Name,
-                            HasGainControl ? wxString::Format(", gain = %d", GuideCameraGain) : "", FrameSize.GetWidth(),
-                            FrameSize.GetHeight(), darkDur ? wxString::Format("have dark, dark dur = %d", darkDur) : "no dark",
-                            CurrentDefectMap ? "defect map in use" : "no defect map", pixelSizeStr);
+    wxString s = wxString::Format(
+        "Camera = %s%s, full size = %d x %d, %s, %s, pixel size = %s\n", Name,
+        HasGainControl ? wxString::Format(", gain = %d", GuideCameraGain) : "",
+        FrameSize.GetWidth(), FrameSize.GetHeight(),
+        darkDur ? wxString::Format("have dark, dark dur = %d", darkDur) : "no dark",
+        CurrentDefectMap ? "defect map in use" : "no defect map", pixelSizeStr);
+    if (!m_charNote.IsEmpty())
+        s += "  Characterisation: " + m_charNote + "\n";
+    return s;
 }
 
 void GuideCamera::AddDark(usImage *dark)
