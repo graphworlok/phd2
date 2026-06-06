@@ -126,6 +126,21 @@ struct CaptureParams
 // mapping from combined binning to (hwBinning, swBinning) pair
 typedef std::map<int, std::pair<int, int>> BinningChoices;
 
+// Dark current model from cam_characterise.py dark_model_WxH.json.
+// Captures the linear dark-current slope over the integration-limited region so
+// PHD2 can import the characterisation master dark and understand its exposure tag.
+struct DarkCurrentModel {
+    bool   valid;
+    double dark_current_adu_per_unit; // slope: ADU per 100µs UVC unit
+    double bias_offset_adu;           // dark level at zero integration (pedestal)
+    int    exposure_max_units;        // UVC units at which the master dark was built
+    double exposure_max_ms;           // same in milliseconds (ImgExpDur tag for PHD2)
+    int    pixel_depth;               // luma bit depth before uint16 scaling (always 8)
+    DarkCurrentModel()
+        : valid(false), dark_current_adu_per_unit(0.0), bias_offset_adu(0.0),
+          exposure_max_units(0), exposure_max_ms(0.0), pixel_depth(8) {}
+};
+
 // fps<->exposure calibration loaded from a cam_characterise.py output file.
 // Anchors are sorted by fps ascending (low fps = long integration = high exposure).
 struct FpsExposureCalib {
@@ -193,7 +208,8 @@ public:
     ExposureImgMap Darks; // map exposure => dark frame
     DefectMap *CurrentDefectMap;
 
-    FpsExposureCalib m_fpsCalib; // optional cam_characterise.py fps<->exposure calibration
+    FpsExposureCalib m_fpsCalib;   // optional cam_characterise.py fps<->exposure calibration
+    DarkCurrentModel m_darkModel;  // optional cam_characterise.py dark current model
 
     static wxArrayString GuideCameraList();
     static GuideCamera *Factory(const wxString& choice);
@@ -273,6 +289,16 @@ public:
     // Estimate exposure in ms from measured fps via calibration. Returns -1 if
     // fps is in the bandwidth-limited region or no calibration is loaded.
     int EstimateExposureMs(double fps) const;
+
+    // Load dark current model from cam_characterise.py dark_model_WxH.json.
+    // Must succeed before ImportMasterDark() can be called.
+    bool LoadDarkCurrentModel(const wxString& path);
+    bool HasDarkCurrentModel() const { return m_darkModel.valid; }
+    // Import a cam_characterise.py master dark .npy (uint16) into the dark library.
+    // Requires LoadDarkCurrentModel() to have succeeded (provides the exposure tag).
+    bool ImportMasterDark(const wxString& npyPath);
+    // Import a cam_characterise.py defects_WxH.txt as the active defect map.
+    bool ImportDefectList(const wxString& path);
 
     virtual wxSize GetFrameSize() const;
     virtual wxSize DarkFrameSize() { return FrameSize; }

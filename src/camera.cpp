@@ -655,6 +655,89 @@ GuideCamera *GuideCamera::Factory(const wxString& choice)
     return pReturn;
 }
 
+// Read a 2-D uint16 little-endian numpy .npy file into a flat pixel vector.
+// Only supports C-order (fortran_order: False) uint16 ('<u2') arrays as written
+// by cam_characterise.py --save-master.
+static bool ReadNpyUint16(const wxString& path, int& width, int& height,
+                           std::vector<unsigned short>& data)
+{
+    wxFile f;
+    if (!f.Open(path, wxFile::read))
+    {
+        Debug.Write(wxString::Format("ReadNpy: cannot open %s\n", path));
+        return false;
+    }
+
+    unsigned char magic[8];
+    if (f.Read(magic, 8) != 8 || memcmp(magic, "\x93NUMPY", 6) != 0)
+    {
+        Debug.Write(wxString::Format("ReadNpy: bad magic in %s\n", path));
+        return false;
+    }
+
+    unsigned char major = magic[6];
+    uint32_t hlen = 0;
+    if (major == 1)
+    {
+        unsigned char b[2];
+        if (f.Read(b, 2) != 2) return false;
+        hlen = b[0] | ((uint32_t)b[1] << 8);
+    }
+    else // v2+: 4-byte header length
+    {
+        unsigned char b[4];
+        if (f.Read(b, 4) != 4) return false;
+        hlen = b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    }
+
+    std::string hdr(hlen, '\0');
+    if (f.Read(&hdr[0], hlen) != (size_t)hlen)
+    {
+        Debug.Write(wxString::Format("ReadNpy: short header in %s\n", path));
+        return false;
+    }
+
+    if (hdr.find("'<u2'") == std::string::npos && hdr.find("\"<u2\"") == std::string::npos)
+    {
+        Debug.Write(wxString::Format("ReadNpy: expected '<u2' (uint16 LE) dtype in %s\n", path));
+        return false;
+    }
+    if (hdr.find("'True'") != std::string::npos ||
+        hdr.find("fortran_order': True") != std::string::npos)
+    {
+        Debug.Write("ReadNpy: fortran_order True not supported\n");
+        return false;
+    }
+
+    // Parse "shape': (H, W)"
+    size_t sp = hdr.find("shape");
+    size_t op = (sp != std::string::npos) ? hdr.find('(', sp) : std::string::npos;
+    size_t cp = (op != std::string::npos) ? hdr.find(')', op) : std::string::npos;
+    if (cp == std::string::npos)
+    {
+        Debug.Write(wxString::Format("ReadNpy: cannot parse shape in %s\n", path));
+        return false;
+    }
+    std::string sh = hdr.substr(op + 1, cp - op - 1);
+    size_t comma = sh.find(',');
+    if (comma == std::string::npos) return false;
+    try {
+        height = std::stoi(sh.substr(0, comma));
+        width  = std::stoi(sh.substr(comma + 1));
+    } catch (...) { return false; }
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) return false;
+
+    size_t npix = (size_t)width * height;
+    data.resize(npix);
+    if (f.Read(data.data(), npix * 2) != npix * 2)
+    {
+        Debug.Write(wxString::Format("ReadNpy: short data in %s\n", path));
+        data.clear();
+        return false;
+    }
+    return true;
+}
+
 bool GuideCamera::LoadFpsCalibration(const wxString& path)
 {
     m_fpsCalib = FpsExposureCalib();
@@ -764,6 +847,128 @@ int GuideCamera::EstimateExposureMs(double fps) const
     return -1;
 }
 
+bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
+{
+    m_darkModel = DarkCurrentModel();
+
+    wxTextFile f;
+    if (!f.Open(path))
+    {
+        Debug.Write(wxString::Format("DarkModel: cannot open %s\n", path));
+        return false;
+    }
+    wxString text;
+    for (wxString line = f.GetFirstLine(); !f.Eof(); line = f.GetNextLine())
+        text += line + "\n";
+    f.Close();
+
+    wxRegEx re_slope("\"dark_current_adu_per_unit\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_bias("\"bias_offset_adu\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_units("\"exposure_max_units\"\\s*:\\s*([0-9]+)");
+    wxRegEx re_ms("\"exposure_max_ms\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_depth("\"pixel_depth\"\\s*:\\s*([0-9]+)");
+
+    double slope = 0.0, bias = 0.0, exp_ms = 0.0;
+    long exp_units = 0, depth = 8;
+
+    if (!re_slope.Matches(text) || !re_slope.GetMatch(text, 1).ToDouble(&slope) ||
+        !re_bias.Matches(text)  || !re_bias.GetMatch(text, 1).ToDouble(&bias))
+    {
+        Debug.Write(wxString::Format("DarkModel: missing dark_current_fit fields in %s\n", path));
+        return false;
+    }
+    if (re_units.Matches(text))
+        re_units.GetMatch(text, 1).ToLong(&exp_units);
+    if (re_ms.Matches(text))
+        re_ms.GetMatch(text, 1).ToDouble(&exp_ms);
+    else if (exp_units > 0)
+        exp_ms = exp_units * 0.1;
+    if (re_depth.Matches(text))
+        re_depth.GetMatch(text, 1).ToLong(&depth);
+
+    if (exp_ms <= 0.0)
+    {
+        Debug.Write(wxString::Format("DarkModel: cannot determine exposure duration from %s\n", path));
+        return false;
+    }
+
+    m_darkModel.valid = true;
+    m_darkModel.dark_current_adu_per_unit = slope;
+    m_darkModel.bias_offset_adu = bias;
+    m_darkModel.exposure_max_units = (int)exp_units;
+    m_darkModel.exposure_max_ms = exp_ms;
+    m_darkModel.pixel_depth = (int)depth;
+
+    Debug.Write(wxString::Format(
+        "DarkModel: loaded from %s: slope=%.5f bias=%.2f exp_max=%dms pixel_depth=%d\n",
+        path, slope, bias, (int)exp_ms, (int)depth));
+    return true;
+}
+
+bool GuideCamera::ImportMasterDark(const wxString& npyPath)
+{
+    if (!m_darkModel.valid)
+    {
+        Debug.Write("ImportMasterDark: dark model not loaded (call LoadDarkCurrentModel first)\n");
+        return false;
+    }
+
+    int w = 0, h = 0;
+    std::vector<unsigned short> pixels;
+    if (!ReadNpyUint16(npyPath, w, h, pixels))
+        return false;
+
+    usImage *dark = new usImage();
+    if (dark->Init(w, h))
+    {
+        delete dark;
+        Debug.Write(wxString::Format("ImportMasterDark: usImage alloc failed %dx%d\n", w, h));
+        return false;
+    }
+
+    memcpy(dark->ImageData, pixels.data(), (size_t)w * h * sizeof(unsigned short));
+    dark->ImgExpDur    = (int)(m_darkModel.exposure_max_ms + 0.5);
+    dark->BitsPerPixel = 16;
+    dark->CalcStats();
+
+    AddDark(dark);
+    Debug.Write(wxString::Format(
+        "ImportMasterDark: %dx%d dark at %dms loaded from %s\n",
+        w, h, dark->ImgExpDur, npyPath));
+    return true;
+}
+
+bool GuideCamera::ImportDefectList(const wxString& path)
+{
+    wxTextFile f;
+    if (!f.Open(path))
+    {
+        Debug.Write(wxString::Format("ImportDefectList: cannot open %s\n", path));
+        return false;
+    }
+
+    DefectMap *map = new DefectMap();
+    int count = 0;
+    for (wxString line = f.GetFirstLine(); !f.Eof(); line = f.GetNextLine())
+    {
+        line.Trim(false);
+        if (line.IsEmpty() || line.StartsWith("#"))
+            continue;
+        wxStringTokenizer tok(line);
+        long x, y;
+        if (tok.GetNextToken().ToLong(&x) && tok.GetNextToken().ToLong(&y))
+        {
+            map->push_back(wxPoint((int)x, (int)y));
+            ++count;
+        }
+    }
+    f.Close();
+
+    SetDefectMap(map);
+    Debug.Write(wxString::Format("ImportDefectList: %d defects loaded from %s\n", count, path));
+    return true;
+}
+
 // ConnectCamera is the one place where we call camera->Connect(). Any work done here
 // applies to all camera types, regardless of how the various camera sub-ckasses
 // implement Connect().
@@ -778,15 +983,42 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
         auto binning = camera->GetBinning();
         camera->LoadLimitFrame(binning);
     }
-    // Auto-load a cam_characterise.py fps<->exposure calibration if one exists for
-    // this camera's frame size. Place calib_WxH.json in the PHD2 data directory.
-    wxString calPath = MyFrame::GetDefaultFileDir() + PATHSEPSTR +
-        wxString::Format("calib_%dx%d.json",
-                         camera->FrameSize.GetWidth(), camera->FrameSize.GetHeight());
+    // Auto-load cam_characterise.py artefacts if present in the PHD2 data directory.
+    // Files (all named by frame size):
+    //   calib_WxH.json       fps<->exposure calibration
+    //   dark_model_WxH.json  dark current slope + exposure tag for master dark
+    //   master_WxH.npy       uint16 master dark (requires dark model for exp tag)
+    //   defects_WxH.txt      hot pixel coordinate list for defect map
+    wxString dataDir = MyFrame::GetDefaultFileDir();
+    wxString tag = wxString::Format("%dx%d",
+        camera->FrameSize.GetWidth(), camera->FrameSize.GetHeight());
+
+    wxString calPath      = dataDir + PATHSEPSTR + "calib_"      + tag + ".json";
+    wxString darkModelPath = dataDir + PATHSEPSTR + "dark_model_" + tag + ".json";
+    wxString npyPath      = dataDir + PATHSEPSTR + "master_"     + tag + ".npy";
+    wxString defectsPath  = dataDir + PATHSEPSTR + "defects_"    + tag + ".txt";
+
     if (wxFileExists(calPath))
         camera->LoadFpsCalibration(calPath);
     else
         Debug.Write(wxString::Format("FpsCalib: no calibration at %s\n", calPath));
+
+    if (wxFileExists(darkModelPath))
+    {
+        camera->LoadDarkCurrentModel(darkModelPath);
+        if (camera->HasDarkCurrentModel() && wxFileExists(npyPath))
+            camera->ImportMasterDark(npyPath);
+        else if (!wxFileExists(npyPath))
+            Debug.Write(wxString::Format("DarkModel: no master dark at %s\n", npyPath));
+    }
+    else
+        Debug.Write(wxString::Format("DarkModel: no dark model at %s\n", darkModelPath));
+
+    if (wxFileExists(defectsPath))
+        camera->ImportDefectList(defectsPath);
+    else
+        Debug.Write(wxString::Format("DefectMap: no defect list at %s\n", defectsPath));
+
     return err;
 }
 
