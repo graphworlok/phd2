@@ -972,6 +972,34 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
     return true;
 }
 
+// Build a usImage dark by scaling the master's dark-current component to a
+// different exposure. Master pixel = bias + dark_current_pixel * max_exposure,
+// so scaling (pixel - bias) by (exp/max) while holding bias fixed gives the
+// physically-correct dark at `expMs` for a linear dark current. `master` and
+// the returned image are in the uint16 (×257) domain; biasU16 must match.
+static usImage *ScaleDark(const std::vector<unsigned short>& master, int w, int h,
+                           double biasU16, double ratio, int expMs)
+{
+    usImage *d = new usImage();
+    if (d->Init(w, h))
+    {
+        delete d;
+        return nullptr;
+    }
+    size_t n = (size_t)w * h;
+    for (size_t i = 0; i < n; i++)
+    {
+        double v = biasU16 + ((double)master[i] - biasU16) * ratio;
+        if (v < 0.0) v = 0.0;
+        else if (v > 65535.0) v = 65535.0;
+        d->ImageData[i] = (unsigned short)(v + 0.5);
+    }
+    d->ImgExpDur    = expMs;
+    d->BitsPerPixel = 16;
+    d->CalcStats();
+    return d;
+}
+
 bool GuideCamera::ImportMasterDark(const wxString& npyPath)
 {
     if (!m_darkModel.valid)
@@ -985,23 +1013,52 @@ bool GuideCamera::ImportMasterDark(const wxString& npyPath)
     if (!ReadNpyUint16(npyPath, w, h, pixels))
         return false;
 
-    usImage *dark = new usImage();
-    if (dark->Init(w, h))
+    int maxMs = (int)(m_darkModel.exposure_max_ms + 0.5);
+
+    // 1. The native master, at the exposure it was actually captured at.
+    usImage *master = new usImage();
+    if (master->Init(w, h))
     {
-        delete dark;
+        delete master;
         Debug.Write(wxString::Format("ImportMasterDark: usImage alloc failed %dx%d\n", w, h));
         return false;
     }
+    memcpy(master->ImageData, pixels.data(), (size_t)w * h * sizeof(unsigned short));
+    master->ImgExpDur    = maxMs;
+    master->BitsPerPixel = 16;
+    master->CalcStats();
+    AddDark(master);
 
-    memcpy(dark->ImageData, pixels.data(), (size_t)w * h * sizeof(unsigned short));
-    dark->ImgExpDur    = (int)(m_darkModel.exposure_max_ms + 0.5);
-    dark->BitsPerPixel = 16;
-    dark->CalcStats();
+    // 2. If the dark current is linear, synthesize scaled darks at each PHD2
+    //    exposure duration shorter than the master, so SelectDark finds a close
+    //    match for the user's actual guide exposure instead of subtracting an
+    //    over-long master (which over-removes hot pixels into clamped holes).
+    //    Scaling DOWN only (ratio < 1, interpolation); longer exposures fall
+    //    back to the native master via SelectDark, since extrapolating dark
+    //    current beyond what was measured — and amplifying master noise — is unsafe.
+    int synth = 0;
+    if (m_darkModel.linear && pFrame && maxMs > 0)
+    {
+        // bias is recorded in the 8-bit luma domain; master is scaled ×257.
+        double biasU16 = m_darkModel.bias_offset_adu * 257.0;
+        const std::vector<int>& durs = pFrame->GetExposureDurations();
+        for (int expMs : durs)
+        {
+            if (expMs <= 0 || expMs >= maxMs)
+                continue; // == maxMs already covered; > maxMs handled by fallback
+            usImage *d = ScaleDark(pixels, w, h, biasU16, (double)expMs / maxMs, expMs);
+            if (d)
+            {
+                AddDark(d);
+                ++synth;
+            }
+        }
+    }
 
-    AddDark(dark);
     Debug.Write(wxString::Format(
-        "ImportMasterDark: %dx%d dark at %dms loaded from %s\n",
-        w, h, dark->ImgExpDur, npyPath));
+        "ImportMasterDark: %dx%d master at %dms loaded from %s; "
+        "%d scaled darks synthesized (linear=%s)\n",
+        w, h, maxMs, npyPath, synth, m_darkModel.linear ? "yes" : "no"));
     return true;
 }
 
@@ -1119,8 +1176,21 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
             const DarkCurrentModel& dm = camera->m_darkModel;
             if (!dm.fidelity_verdict.IsEmpty())
             {
-                // Extract the key word: "REAL", "synthetic", "partial"
-                wxString key = dm.fidelity_verdict.Upper().BeforeFirst(' ');
+                // Classify by the discriminating keyword, not the first word: all
+                // verdict strings begin "in integrating region..." / "partial:", so
+                // the meaningful term ("synthetic", "sub-proportional", "REAL
+                // integration") sits after the "->". Check synthetic first because
+                // the "partial" verdict text also contains the word "real".
+                wxString v = dm.fidelity_verdict.Lower();
+                wxString key;
+                if (v.Contains("synthetic"))
+                    key = "SYNTHETIC (firmware faking exposure)";
+                else if (v.Contains("partial") || v.Contains("sub-proportional"))
+                    key = "PARTIAL (clamped/quantised integration)";
+                else if (v.Contains("real integration"))
+                    key = "REAL integration";
+                else
+                    key = dm.fidelity_verdict; // unknown form: show verbatim
                 if (!note.IsEmpty()) note += ", ";
                 note += "verdict: " + key;
             }
@@ -1129,7 +1199,7 @@ bool GuideCamera::ConnectCamera(GuideCamera *camera, const wxString& cameraId)
                 if (!note.IsEmpty()) note += ", ";
                 note += wxString::Format("dark r2=%.3f", dm.r2);
                 if (!dm.linear)
-                    note += " (non-linear)";
+                    note += " (non-linear: darks not scaled)";
             }
         }
 

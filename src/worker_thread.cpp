@@ -196,15 +196,34 @@ bool WorkerThread::HandleExpose(EXPOSE_REQUEST *req)
                 throw ERROR_INFO("Capture failed");
             }
             long elapsed_ms = captureTimer.Time();
-            // If the camera returned far faster than the requested exposure, integration
-            // is likely synthetic (gain-boost or frame-sum) rather than real.
-            if (elapsed_ms > 0 && params.duration >= 100 &&
-                elapsed_ms < params.duration / 2)
+            // Exposure-honesty check. For a real-integrating UVC camera one frame's
+            // capture time tracks the integration time, so fps ~= 1000/elapsed maps
+            // back through the calibration to an implied exposure. If that disagrees
+            // with what we requested, the firmware is not really integrating.
+            if (elapsed_ms > 0 && params.duration >= 100)
             {
-                Debug.Write(wxString::Format(
-                    "FpsCalib: short capture: requested=%dms elapsed=%ldms "
-                    "(possible synthetic/gain-boost exposure)\n",
-                    params.duration, elapsed_ms));
+                int impliedMs = pCamera->HasFpsCalibration()
+                    ? pCamera->EstimateExposureMs(1000.0 / elapsed_ms)
+                    : -1;
+                if (impliedMs > 0)
+                {
+                    double ratio = (double) params.duration / impliedMs;
+                    if (ratio < 0.7 || ratio > 1.43)
+                        Debug.Write(wxString::Format(
+                            "FpsCalib: exposure honesty: requested=%dms "
+                            "fps-implied=%dms (elapsed=%ldms) -- readback/integration "
+                            "disagree, firmware likely not integrating as commanded\n",
+                            params.duration, impliedMs, elapsed_ms));
+                }
+                else if (elapsed_ms < params.duration / 2)
+                {
+                    // No calibration (or fps in the bandwidth-limited region): fall
+                    // back to the crude "returned far too fast" heuristic.
+                    Debug.Write(wxString::Format(
+                        "FpsCalib: short capture: requested=%dms elapsed=%ldms "
+                        "(possible synthetic/gain-boost exposure)\n",
+                        params.duration, elapsed_ms));
+                }
             }
         }
         else
