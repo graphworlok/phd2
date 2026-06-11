@@ -196,10 +196,13 @@ bool WorkerThread::HandleExpose(EXPOSE_REQUEST *req)
                 throw ERROR_INFO("Capture failed");
             }
             long elapsed_ms = captureTimer.Time();
-            // Exposure-honesty check. For a real-integrating UVC camera one frame's
-            // capture time tracks the integration time, so fps ~= 1000/elapsed maps
-            // back through the calibration to an implied exposure. If that disagrees
-            // with what we requested, the firmware is not really integrating.
+            // Exposure-honesty check, ONE-SIDED by design. elapsed wraps the
+            // whole Capture() call -- driver setup, dequeue, conversion, and
+            // for accumulating drivers several frame periods -- so it can only
+            // be LONGER than the true integration, never shorter. An implied
+            // exposure above the request is therefore expected and means
+            // nothing; only an implied exposure well SHORT of the request is
+            // evidence the firmware is not integrating as commanded.
             if (elapsed_ms > 0 && params.duration >= 100)
             {
                 int impliedMs = pCamera->HasFpsCalibration()
@@ -207,12 +210,11 @@ bool WorkerThread::HandleExpose(EXPOSE_REQUEST *req)
                     : -1;
                 if (impliedMs > 0)
                 {
-                    double ratio = (double) params.duration / impliedMs;
-                    if (ratio < 0.7 || ratio > 1.43)
+                    if ((double) params.duration / impliedMs > 1.43)
                         Debug.Write(wxString::Format(
-                            "FpsCalib: exposure honesty: requested=%dms "
-                            "fps-implied=%dms (elapsed=%ldms) -- readback/integration "
-                            "disagree, firmware likely not integrating as commanded\n",
+                            "FpsCalib: exposure honesty: requested=%dms but capture "
+                            "time implies only %dms of integration (elapsed=%ldms) -- "
+                            "firmware likely not integrating as commanded\n",
                             params.duration, impliedMs, elapsed_ms));
                 }
                 else if (elapsed_ms < params.duration / 2)

@@ -693,6 +693,11 @@ static bool ReadNpyUint16(const wxString& path, int& width, int& height,
         if (f.Read(b, 4) != 4) return false;
         hlen = b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
     }
+    if (hlen == 0 || hlen > 65536) // real npy headers are <1KB; cap corrupt lengths
+    {
+        Debug.Write(wxString::Format("ReadNpy: implausible header length %u in %s\n", hlen, path));
+        return false;
+    }
 
     std::string hdr(hlen, '\0');
     if (f.Read(&hdr[0], hlen) != (size_t)hlen)
@@ -706,8 +711,7 @@ static bool ReadNpyUint16(const wxString& path, int& width, int& height,
         Debug.Write(wxString::Format("ReadNpy: expected '<u2' (uint16 LE) dtype in %s\n", path));
         return false;
     }
-    if (hdr.find("'True'") != std::string::npos ||
-        hdr.find("fortran_order': True") != std::string::npos)
+    if (hdr.find("fortran_order': True") != std::string::npos)
     {
         Debug.Write("ReadNpy: fortran_order True not supported\n");
         return false;
@@ -742,6 +746,12 @@ static bool ReadNpyUint16(const wxString& path, int& width, int& height,
     return true;
 }
 
+// JSON number grammar including scientific notation: Python's json.dump emits
+// e.g. "6e-05" for any |x| < 1e-4, which a plain [0-9.]+ pattern silently fails
+// to match -- and the dark-current slope is exactly that small on a low-dark-
+// current sensor. wxString::ToDouble (strtod) parses the matched text fine.
+#define JSON_NUM "(-?[0-9]+(?:\\.[0-9]*)?(?:[eE][-+]?[0-9]+)?)"
+
 bool GuideCamera::LoadFpsCalibration(const wxString& path)
 {
     m_fpsCalib = FpsExposureCalib();
@@ -757,8 +767,8 @@ bool GuideCamera::LoadFpsCalibration(const wxString& path)
         text += line + "\n";
     f.Close();
 
-    wxRegEx re_fps_max("\"fps_max_bandwidth\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
-    wxRegEx re_limit("\"integration_limited_below_fps\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_fps_max("\"fps_max_bandwidth\"\\s*:\\s*" JSON_NUM);
+    wxRegEx re_limit("\"integration_limited_below_fps\"\\s*:\\s*" JSON_NUM);
     wxRegEx re_afps("\"anchors_fps\"\\s*:\\s*\\[([^\\]]+)\\]");
     wxRegEx re_aexp("\"anchors_exposure\"\\s*:\\s*\\[([^\\]]+)\\]");
 
@@ -843,7 +853,10 @@ int GuideCamera::EstimateExposureMs(double fps) const
     {
         if (fps <= af[i])
         {
-            double t = (fps - af[i - 1]) / (af[i] - af[i - 1]);
+            double denom = af[i] - af[i - 1];
+            if (denom <= 0.0) // duplicate/unsorted anchors from the producer
+                return (int)(ae[i] * 0.1 + 0.5);
+            double t = (fps - af[i - 1]) / denom;
             double exp_units = ae[i - 1] + t * (ae[i] - ae[i - 1]);
             return (int)(exp_units * 0.1 + 0.5); // 100µs units -> ms
         }
@@ -890,8 +903,18 @@ static wxString GetUsbDeviceTag(const wxString& devicePath)
     wxString tag = vid + pid; // e.g. "046d0825"
     if (!sn.IsEmpty())
     {
+        // ASCII alnum or '-' only, exactly matching cam_manager.py's
+        // re.sub(r"[^a-zA-Z0-9\-]", "_", sn). wxIsalnum is Unicode-aware and
+        // would keep characters Python replaces, deriving a DIFFERENT
+        // directory name for the same device.
         for (size_t i = 0; i < sn.size(); i++)
-            if (!wxIsalnum(sn[i]) && sn[i] != '-') sn[i] = '_';
+        {
+            wxUniChar c = sn[i];
+            bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '-';
+            if (!ok)
+                sn[i] = '_';
+        }
         tag += "_" + sn;
     }
     Debug.Write(wxString::Format("DevTag: %s -> %s\n", devicePath, tag));
@@ -914,12 +937,12 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
         text += line + "\n";
     f.Close();
 
-    wxRegEx re_slope("\"dark_current_adu_per_unit\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]*)?)");
-    wxRegEx re_bias("\"bias_offset_adu\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_slope("\"dark_current_adu_per_unit\"\\s*:\\s*" JSON_NUM);
+    wxRegEx re_bias("\"bias_offset_adu\"\\s*:\\s*" JSON_NUM);
     wxRegEx re_units("\"exposure_max_units\"\\s*:\\s*([0-9]+)");
-    wxRegEx re_ms("\"exposure_max_ms\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_ms("\"exposure_max_ms\"\\s*:\\s*" JSON_NUM);
     wxRegEx re_depth("\"pixel_depth\"\\s*:\\s*([0-9]+)");
-    wxRegEx re_r2("\"r2\"\\s*:\\s*([0-9]+(?:\\.[0-9]*)?)");
+    wxRegEx re_r2("\"r2\"\\s*:\\s*" JSON_NUM); // r2 can be negative for a bad fit
     wxRegEx re_linear("\"linear\"\\s*:\\s*(true|false)");
     wxRegEx re_verdict("\"exposure_fidelity_verdict\"\\s*:\\s*\"([^\"]+)\"");
 
@@ -975,10 +998,11 @@ bool GuideCamera::LoadDarkCurrentModel(const wxString& path)
 // Build a usImage dark by scaling the master's dark-current component to a
 // different exposure. Master pixel = bias + dark_current_pixel * max_exposure,
 // so scaling (pixel - bias) by (exp/max) while holding bias fixed gives the
-// physically-correct dark at `expMs` for a linear dark current. `master` and
-// the returned image are in the uint16 (×257) domain; biasU16 must match.
+// physically-correct dark at `expMs` for a linear dark current. `master`,
+// `bias` and the returned image must all be in the SAME pixel domain as the
+// camera's live frames (the caller converts before calling).
 static usImage *ScaleDark(const std::vector<unsigned short>& master, int w, int h,
-                           double biasU16, double ratio, int expMs)
+                           double bias, double ratio, int expMs, int bpp)
 {
     usImage *d = new usImage();
     if (d->Init(w, h))
@@ -989,13 +1013,13 @@ static usImage *ScaleDark(const std::vector<unsigned short>& master, int w, int 
     size_t n = (size_t)w * h;
     for (size_t i = 0; i < n; i++)
     {
-        double v = biasU16 + ((double)master[i] - biasU16) * ratio;
+        double v = bias + ((double)master[i] - bias) * ratio;
         if (v < 0.0) v = 0.0;
         else if (v > 65535.0) v = 65535.0;
         d->ImageData[i] = (unsigned short)(v + 0.5);
     }
     d->ImgExpDur    = expMs;
-    d->BitsPerPixel = 16;
+    d->BitsPerPixel = bpp;
     d->CalcStats();
     return d;
 }
@@ -1013,6 +1037,34 @@ bool GuideCamera::ImportMasterDark(const wxString& npyPath)
     if (!ReadNpyUint16(npyPath, w, h, pixels))
         return false;
 
+    // The file is matched to this camera by frame size in its name; a mismatch
+    // means a misnamed or stale file, and an off-size dark would just sit in
+    // the library failing the compatibility check on every frame.
+    if (w != FrameSize.GetWidth() || h != FrameSize.GetHeight())
+    {
+        Debug.Write(wxString::Format(
+            "ImportMasterDark: %s is %dx%d but camera frame is %dx%d -- refusing\n",
+            npyPath, w, h, FrameSize.GetWidth(), FrameSize.GetHeight()));
+        return false;
+    }
+
+    // Pixel domain. The .npy is stored at 16-bit full scale (8-bit luma x257),
+    // but PHD2 does NOT normalise camera data by bit depth: an 8-bit camera
+    // path (e.g. an INDI V4L2 CCD delivering 8-bit blobs) stores raw 0-255
+    // values in the uint16 buffer, and a dark is only subtractable if it lives
+    // in the SAME domain as the live frames. Convert once here. (For drivers
+    // that accumulate multiple raw frames per exposure the live scale is
+    // exposure-dependent and no static dark can match; the defect map, which
+    // SubtractDark prefers anyway, is the correct tool there.)
+    int bpp = BitsPerPixel() <= 8 ? 8 : 16; // (0/unset counts as 8-bit)
+    double domainScale = (bpp == 8) ? 1.0 / 257.0 : 1.0;
+    if (domainScale != 1.0)
+    {
+        for (size_t i = 0; i < pixels.size(); i++)
+            pixels[i] = (unsigned short)((double)pixels[i] * domainScale + 0.5);
+    }
+    double biasDark = m_darkModel.bias_offset_adu * 257.0 * domainScale;
+
     int maxMs = (int)(m_darkModel.exposure_max_ms + 0.5);
 
     // 1. The native master, at the exposure it was actually captured at.
@@ -1025,7 +1077,7 @@ bool GuideCamera::ImportMasterDark(const wxString& npyPath)
     }
     memcpy(master->ImageData, pixels.data(), (size_t)w * h * sizeof(unsigned short));
     master->ImgExpDur    = maxMs;
-    master->BitsPerPixel = 16;
+    master->BitsPerPixel = bpp;
     master->CalcStats();
     AddDark(master);
 
@@ -1039,14 +1091,12 @@ bool GuideCamera::ImportMasterDark(const wxString& npyPath)
     int synth = 0;
     if (m_darkModel.linear && pFrame && maxMs > 0)
     {
-        // bias is recorded in the 8-bit luma domain; master is scaled ×257.
-        double biasU16 = m_darkModel.bias_offset_adu * 257.0;
         const std::vector<int>& durs = pFrame->GetExposureDurations();
         for (int expMs : durs)
         {
             if (expMs <= 0 || expMs >= maxMs)
                 continue; // == maxMs already covered; > maxMs handled by fallback
-            usImage *d = ScaleDark(pixels, w, h, biasU16, (double)expMs / maxMs, expMs);
+            usImage *d = ScaleDark(pixels, w, h, biasDark, (double)expMs / maxMs, expMs, bpp);
             if (d)
             {
                 AddDark(d);
@@ -1056,9 +1106,9 @@ bool GuideCamera::ImportMasterDark(const wxString& npyPath)
     }
 
     Debug.Write(wxString::Format(
-        "ImportMasterDark: %dx%d master at %dms loaded from %s; "
+        "ImportMasterDark: %dx%d master at %dms loaded from %s (%d-bit domain); "
         "%d scaled darks synthesized (linear=%s)\n",
-        w, h, maxMs, npyPath, synth, m_darkModel.linear ? "yes" : "no"));
+        w, h, maxMs, npyPath, bpp, synth, m_darkModel.linear ? "yes" : "no"));
     return true;
 }
 
