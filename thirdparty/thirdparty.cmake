@@ -73,7 +73,7 @@ if(WIN32)
   FetchContent_Declare(
     vcpkg
     GIT_REPOSITORY https://github.com/microsoft/vcpkg.git
-    GIT_TAG f7423ee180c4b7f40d43402c2feb3859161ef625
+    GIT_TAG 84bab45d415d22042bd0b9081aea57f362da3f35  # 2025.12.12
     UPDATE_COMMAND bootstrap-vcpkg.bat -disableMetrics
     COMMAND ${CMAKE_COMMAND} -E echo "Building vcpkg cfitsio"
     COMMAND vcpkg install --binarysource=default --no-print-usage cfitsio:${WINDOWS_ARCH}-windows
@@ -92,7 +92,7 @@ if(WIN32)
   set(VCPKG_DEBUG_LIB ${VCPKG_PREFIX}/debug/lib)
   set(VCPKG_RELEASE_LIB ${VCPKG_PREFIX}/lib)
   set(VCPKG_INCLUDE ${VCPKG_PREFIX}/include)
-  include_directories(${VCPKG_INCLUDE})
+  include_directories(${VCPKG_INCLUDE} ${VCPKG_INCLUDE}/opencv4)
 endif()
 
 if(APPLE)
@@ -588,6 +588,8 @@ if(WIN32)
       ${VCPKG_DEBUG_BIN}/liblzma.dll
       ${VCPKG_DEBUG_BIN}/libwebp.dll
       ${VCPKG_DEBUG_BIN}/libwebpdecoder.dll
+      ${VCPKG_DEBUG_BIN}/libwebpdemux.dll
+      ${VCPKG_DEBUG_BIN}/libwebpmux.dll
       ${VCPKG_DEBUG_BIN}/libsharpyuv.dll
   )
   list(APPEND PHD_COPY_EXTERNAL_REL
@@ -602,6 +604,8 @@ if(WIN32)
       ${VCPKG_RELEASE_BIN}/liblzma.dll
       ${VCPKG_RELEASE_BIN}/libwebp.dll
       ${VCPKG_RELEASE_BIN}/libwebpdecoder.dll
+      ${VCPKG_RELEASE_BIN}/libwebpdemux.dll
+      ${VCPKG_RELEASE_BIN}/libwebpmux.dll
       ${VCPKG_RELEASE_BIN}/libsharpyuv.dll
   )
 endif()

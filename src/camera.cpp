@@ -190,6 +190,10 @@ wxSize UNDEFINED_FRAME_SIZE = wxSize(0, 0);
 # include "cam_indi.h"
 #endif
 
+#if defined(ALPACA_CAMERA)
+# include "cam_alpaca.h"
+#endif
+
 #if defined(SBIGROTATOR_CAMERA)
 # include "cam_sbigrotator.h"
 #endif
@@ -373,6 +377,9 @@ wxArrayString GuideCamera::GuideCameraList()
 #if defined(INDI_CAMERA)
     CameraList.Add(INDICamName());
 #endif
+#if defined(ALPACA_CAMERA)
+    CameraList.Add(_T("Alpaca Camera (Experimental)"));
+#endif
 #if defined(V4L_CAMERA)
     if (true == Camera_VIDEODEVICE.ProbeDevices())
     {
@@ -420,6 +427,12 @@ GuideCamera *GuideCamera::Factory(const wxString& choice)
         else if (choice.Contains(_T("INDI")))
         {
             pReturn = INDICameraFactory::MakeINDICamera();
+        }
+#endif
+#if defined(ALPACA_CAMERA)
+        else if (choice.Contains(_T("Alpaca")))
+        {
+            pReturn = AlpacaCameraFactory::MakeAlpacaCamera();
         }
 #endif
 #if defined(IOPTRON_CAMERA)
